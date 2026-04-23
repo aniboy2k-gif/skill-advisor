@@ -128,10 +128,10 @@ for item in skills:
             # 수동 전용 — utterance_patterns만 있음, H1 경고 제외
             issues.append({"severity": "info", "code": "H1-M",
                            "msg": "[수동 전용] utterance 기반 트리거만 존재 — 파일 기반 자동 로드 없음"})
-    elif len(globs) == 0:
-        # H1: utterance 또는 events가 있지만 globs 없음
-        issues.append({"severity": "high", "code": "H1",
-                       "msg": "file_path_globs 없음 — 파일 편집 시 자동 로드 불가"})
+    elif len(globs) == 0 and len(events) > 0:
+        # H1-E: tool_events 전용 — 의도적 설계, utterance 전용(H1-M)과 동일 처리
+        issues.append({"severity": "info", "code": "H1-E",
+                       "msg": "[이벤트 전용] tool_events 기반 트리거만 존재 — 파일 경로 기반 자동 로드 없음"})
 
     # I1: description 비어있음
     if not desc.strip():
@@ -181,7 +181,7 @@ severity 순 (critical → high → medium → info):
 |------|----------|------|--------------|
 | C1 | critical | 존재하지 않는 절대 경로 참조 | — |
 | H0 | high | 모든 트리거 없음 (유령 스킬) | — |
-| H1 | high | file_path_globs=0 (events/utterance 있을 때) | — |
+| H1-E | info | 이벤트 전용 (tool_events>0, globs=0) | 의도적 설계로 간주, H1-M과 동일 처리 |
 | H1-M | info | 수동 전용 (utterance만 있고 globs=events=0) | skill-advisor 자신 포함 |
 | M1 | medium | 동일 glob 문자열 중복 선언 | — |
 | I1 | info | description 비어있음 | — |
@@ -299,12 +299,6 @@ Phase 1: 캐시 없이 매번 검색. fetched_at은 현재 실행 시각으로 �
 
 아래 Bash 명령으로 외부 스크립트를 실행한다:
 
-```bash
-SCRIPT_DIR="$(dirname "$0")"
-python3 "~/.claude/skills/skill-advisor/scripts/session-review.py" \
-  [--confirm] [--max-edits N] [--json] [--jsonl PATH]
-```
-
 실제 실행 시 Bash 툴로 아래를 수행한다:
 
 ```bash
@@ -379,6 +373,7 @@ Parsed: N file edit events / N tool_uses
 - **명칭**: `/skill-advisor` — DA 2회 Finalized (2026-04-23)
 - **read-only 원칙**: SKILL.md 직접 수정 불가 — Phase 2 체크리스트 완료 후에만 --apply 활성화
 - **수동 전용 분류**: file_path_globs=[] + tool_events=[] + utterance_patterns 있음 → H1-M(info). 세 필드 모두 비어있으면 H0(high).
+- **이벤트 전용 분류**: file_path_globs=[] + tool_events>0 → H1-E(info). 의도적 설계로 간주, H1 경고 제외.
 - **skill-index.json fallback**: 파일 없거나 재생성 실패 시 직접 스캔으로 진행
 - **Phase 1 M1 한계**: 동일 문자열 완전 일치만 감지. fnmatch 중첩 감지는 Phase 2.
 - **exit code**: 기존 도구 관례 준수 (0=성공, 1=이슈/경고, 2=실행 실패)

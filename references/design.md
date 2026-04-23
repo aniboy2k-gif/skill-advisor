@@ -24,7 +24,7 @@ DA chain 세션 로그: /tmp/da-chain-1776898517 (설계 검증), /tmp/da-chain-
   "schema_version": "1.0",
   "skill": "string",
   "target_field": "file_path_globs | tool_events | description | utterance_patterns",
-  "proposal_type": "add_glob | update_description | remove_glob | fix_path | add_event",
+  "proposal_type": "add_glob | update_description | fix_path | update_utterance (Phase 1) | remove_glob | add_event | update_risk_level (Phase 2)",
   "value": "추가/변경할 값",
   "current_value": "현재 값 (롤백 기준)",
   "source": "official_readme | web_search | local_analysis",

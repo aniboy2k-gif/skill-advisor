@@ -29,10 +29,12 @@ Audits all installed skills and classifies issues by severity:
 | C1 | **critical** | Broken absolute path in `file_path_globs` | Skill silently fails to load |
 | H0 | **high** | Ghost skill — zero triggers across all mechanisms | Skill is completely unreachable |
 | H1 | **high** | Missing `file_path_globs` | Skill won't load on file edits |
+| H1-E | **info** | tool_events only, no globs — intentional design | No false alarm; treated like H1-M |
+| H1-M | **info** | utterance patterns only — intentional manual-only | No false alarm |
 | M1 | **medium** | Duplicate glob string declared by 2+ skills | Potential redundant loading |
 | I1 | **info** | Empty `description` field | Reduces indexing quality |
 
-*H0 is higher severity than H1: a ghost skill is completely unreachable, while an H1 skill can still be triggered by utterance patterns.*
+*H0 is higher severity than H1: a ghost skill is completely unreachable, while H1/H1-E/H1-M skills can still be triggered by other mechanisms.*
 
 > ⚠ **Phase 1 limitation**: M1 detects exact string matches only. "No M1" does not guarantee zero conflicts.
 
@@ -53,13 +55,18 @@ Example output:
 ## /skill-advisor --session-review
 
 ⚠ Candidate recommendations only — load history not directly verified.
+  (Phase 1.5 load log required for direct comparison)
 
 Session: abc123.jsonl  (2026-04-23 09:18, 12365 KB)
 Parsed: 160 file edit events / 758 tool_uses
 
-Related Skill Candidates:
-  [medium] skill-creator  — SKILL.md ← **/.claude/skills/**
-  [low]    doc-coauthoring — README.md ← **/README.md
+---
+### Related Skill Candidates (file-change based)
+
+Skill                  Matched file                        Glob                           Confidence
+----------------------------------------------------------------------------------------------------
+skill-creator          SKILL.md                            **/.claude/skills/**           medium
+doc-coauthoring        README.md                           **/README.md                   low
 ```
 
 > **Phase 1 limitation**: Bash command-based file changes are not detected. This is a candidate recommendation, not a definitive diagnosis.
@@ -74,14 +81,17 @@ Returns a JSON array for CI pipelines or shell scripts.
 
 ---
 
-## Safe by Design
+## What skill-advisor does right now (Phase 1)
 
-skill-advisor never writes to SKILL.md. Changes to your skill configuration should always be intentional and reviewed.
+skill-advisor **never writes to SKILL.md** — it only reads and reports.
 
-| Action | Tool |
-|--------|------|
-| Diagnose & advise | **skill-advisor** (this) |
-| Apply changes | `skill-creator --apply-proposal` *(Phase 2)* |
+| Capability | Phase 1 (now) | Phase 2 (planned) |
+|-----------|:---:|:---:|
+| Diagnose skill coverage | ✅ | ✅ |
+| Generate improvement proposals (JSON) | ✅ dry-run only | ✅ |
+| Apply proposals to SKILL.md | ❌ not available | ✅ via `skill-creator --apply-proposal` |
+
+To apply proposals now: review the JSON output, then use `skill-creator` manually.
 
 ---
 
@@ -104,12 +114,29 @@ skill-advisor audits all three. A skill with none of them is a "ghost skill" —
 ## Prerequisites
 
 - [Claude Code](https://code.claude.com) installed and running
+- **Python 3.9+** (for `--session-review`)
+  > Verify: `python3 --version`
 - `skill-index.sh` SessionStart hook active
 
   Check if it's already installed:
   ```bash
   ls ~/.claude/hooks/skill-index.sh
   # Prints the path if installed — if not found, install the Claude Code hooks package
+  ```
+
+  To register the hook permanently, add to `~/.claude/settings.json`:
+  ```json
+  {
+    "hooks": {
+      "SessionStart": [
+        {
+          "hooks": [
+            {"type": "command", "command": "zsh ~/.claude/hooks/skill-index.sh"}
+          ]
+        }
+      ]
+    }
+  }
   ```
 
   > If `skill-index.json` is unavailable at runtime, skill-advisor automatically falls back to scanning `~/.claude/skills/` directly and warns you.
@@ -142,6 +169,7 @@ Start or restart a Claude Code session — skill-advisor will be available immed
 /skill-advisor --enrich <skill-name>    → Deep analysis + SkillPatchProposal output
 /skill-advisor --session-review         → Post-work skill candidate recommendations
 /skill-advisor --session-review --confirm → Choose session interactively
+                                             ⚠ Requires interactive terminal — do not use in Claude Code sessions
 ```
 
 ### Example `--scan` output
@@ -212,6 +240,8 @@ Note: H1-M (manual-only) = skill relies on utterance patterns only,
 - M1 detects **exact string duplicates only** — fnmatch path overlap is Phase 2
 - `--apply` is not available in Phase 1 — apply proposals manually via `skill-creator`
 - `source_type` classification is path-heuristic — official skill impersonation is not detected
+- `--enrich` supports **official** (`anthropics/skills`) and **local** (`.claude/skills/`) skills only — third-party skills are excluded from web-search enrichment
+- `--session-review --confirm` requires an **interactive terminal** — it will hang in non-interactive environments (e.g., Claude Code sessions)
 
 ---
 

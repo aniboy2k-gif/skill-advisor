@@ -3,6 +3,7 @@
 skill-advisor --session-review
 Recommend related skills based on files edited in the current Claude Code session.
 """
+from __future__ import annotations
 
 import argparse
 import fnmatch
@@ -50,7 +51,11 @@ def find_jsonl(confirm: bool = False) -> Path | None:
             import datetime
             mt = datetime.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
             print(f"  {i}. {p.name}  ({mt}, {p.stat().st_size // 1024} KB)")
-        choice = input("Select [1]: ").strip() or "1"
+        try:
+            choice = input("Select [1]: ").strip() or "1"
+        except EOFError:
+            print("[WARN] Non-interactive environment — using most recent session.", file=sys.stderr)
+            return candidates[0]
         try:
             return candidates[int(choice) - 1]
         except (IndexError, ValueError):
@@ -151,6 +156,7 @@ def build_candidates(edits: list[dict], skills: list[dict]) -> dict[str, dict]:
                         per_skill[name] = {
                             "skill": name,
                             "file": Path(f).name,
+                            "_full_path": f,
                             "glob": g,
                             "confidence": conf,
                             "matched_files": cur["matched_files"] + 1 if cur else 1,
@@ -163,10 +169,10 @@ def build_candidates(edits: list[dict], skills: list[dict]) -> dict[str, dict]:
 
 def build_proposals(edits: list[dict], candidates: dict[str, dict]) -> list[dict]:
     from datetime import datetime, timezone
-    matched_files = {c["file"] for c in candidates.values()}
+    matched_paths = {c["_full_path"] for c in candidates.values()}
     unmatched = [
         e["file"] for e in edits
-        if Path(e["file"]).name not in matched_files
+        if e["file"] not in matched_paths
         and not any(e["file"].startswith(p) for p in EXCLUDE_PREFIXES)
     ]
 
@@ -178,7 +184,7 @@ def build_proposals(edits: list[dict], candidates: dict[str, dict]) -> list[dict
             "skill": "(unknown — no matching skill)",
             "target_field": "file_path_globs",
             "proposal_type": "add_glob",
-            "value": f"**/{p.name}" if p.suffix else f"**/{p.name}/**",
+            "value": f"**/{p.name}",
             "current_value": [],
             "confidence": "low",
             "reason": f"Edited file '{p.name}' matched no skill glob",
@@ -225,7 +231,10 @@ def print_json(jsonl: Path, stats: dict, candidates: dict, proposals: list) -> N
     print(json.dumps({
         "session": str(jsonl),
         "stats": stats,
-        "candidates": list(candidates.values()),
+        "candidates": [
+            {k: v for k, v in c.items() if k != "_full_path"}
+            for c in candidates.values()
+        ],
         "proposals": proposals,
     }, indent=2, ensure_ascii=False))
 
