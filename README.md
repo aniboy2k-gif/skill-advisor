@@ -15,6 +15,7 @@
 - Two skills seem to react to the same file at the same time
 - You want a safety check before editing a skill's configuration manually
 - You want to know which of your skills have no file-based auto-trigger set up
+- You want error and correction patterns from your session mapped to relevant skills
 
 ---
 
@@ -40,9 +41,11 @@ Audits all installed skills and classifies issues by severity:
 
 ### Review post-work skill coverage — `--session-review`
 
-After completing a task, check which installed skills were relevant to files you edited — and which may have missed loading.
+After completing a task, analyze the current session's JSONL to get two layers of skill recommendations:
 
-Analyzes the current Claude Code session's JSONL file to recommend related skills based on file changes:
+**Layer 1 — File-change based** (existing): Which skills are relevant to files you edited?
+
+**Layer 2 — Signal based** (new in Phase 1.6): What do error patterns and user corrections in this session suggest about missing skills?
 
 ```
 /skill-advisor --session-review           → Immediate analysis (most recent session)
@@ -54,10 +57,7 @@ Example output:
 ```
 ## /skill-advisor --session-review
 
-⚠ Candidate recommendations only — load history not directly verified.
-  (Phase 1.5 load log required for direct comparison)
-
-Session: abc123.jsonl  (2026-04-23 09:18, 12365 KB)
+Session: abc123.jsonl  (2026-04-23 09:18, 1662 KB)
 Parsed: 160 file edit events / 758 tool_uses
 
 ---
@@ -66,10 +66,27 @@ Parsed: 160 file edit events / 758 tool_uses
 Skill                  Matched file                        Glob                           Confidence
 ----------------------------------------------------------------------------------------------------
 skill-creator          SKILL.md                            **/.claude/skills/**           medium
-doc-coauthoring        README.md                           **/README.md                   low
+
+---
+### Error-driven Recommendations
+
+Skill                  Signal                              Confidence   Evidence
+--------------------------------------------------------------------------------
+systematic-debugging   test failure pattern                high         3 건
+
+---
+### Correction-driven Recommendations
+
+  → plan (repeated user corrections, 4건 수정 감지)
+
+🔗 session-retrospective installed — run /session-retrospective for a full session retrospective
 ```
 
-> **Phase 1 limitation**: Bash command-based file changes are not detected. This is a candidate recommendation, not a definitive diagnosis.
+Each signal-based recommendation carries **provenance**: `source`, `signal`, `confidence`, and `evidence_count` — so you know exactly why a skill was recommended.
+
+> **Conservative design**: signal detection uses a 3-condition AND gate (assistant tool_use preceding + short message + negation keyword) to minimise false positives. False negatives are accepted as a trade-off.
+
+> **Phase 1 limitation**: Bash command-based file changes are not detected. Signal recommendations are heuristic, not definitive.
 
 ### Get reviewable improvement proposals — `--enrich [skill-name]`
 
@@ -79,19 +96,105 @@ Reads the target skill's SKILL.md, optionally fetches the official README for `a
 
 Returns a JSON array for CI pipelines or shell scripts.
 
+The `--session-review --json` output includes:
+
+```json
+{
+  "session": "abc123.jsonl",
+  "track": "track1",
+  "candidates": [...],
+  "signal_recommendations": [
+    {
+      "skill": "systematic-debugging",
+      "source": "error_signal",
+      "signal": "test failure pattern",
+      "confidence": "high",
+      "evidence_count": 3
+    }
+  ],
+  "proposals": [...]
+}
+```
+
 ---
 
-## What skill-advisor does right now (Phase 1)
+## Optional Integration: session-retrospective
+
+skill-advisor works standalone, but pairs naturally with [claude-skill-session-retrospective](https://github.com/accidentalrebel/claude-skill-session-retrospective).
+
+### Two-track detection
+
+skill-advisor automatically detects whether session-retrospective is installed and adjusts its output:
+
+| | Track 1 (installed) | Track 2 (not installed) |
+|-|---------------------|------------------------|
+| **JSONL analysis** | ✅ same | ✅ same |
+| **Signal recommendations** | ✅ same | ✅ same |
+| **Footer message** | `🔗 session-retrospective installed — run /session-retrospective` | `💡 TIP: install session-retrospective for a full narrative retrospective` |
+
+Both tracks produce **identical skill recommendation quality** — the difference is only the footer guidance.
+
+### Install session-retrospective
+
+```bash
+cd ~/.claude/skills
+git clone https://github.com/accidentalrebel/claude-skill-session-retrospective session-retrospective
+```
+
+Once installed, running `/skill-advisor --session-review` followed by `/session-retrospective` gives you:
+- skill-advisor: which skills to use next time (forward-looking)
+- session-retrospective: what you learned this session (backward-looking)
+
+> **Note**: session-retrospective has no published license (licenseInfo: null as of 2026-04-23). skill-advisor's signal analysis is an independent implementation — no code from that repository is reused.
+
+---
+
+## What skill-advisor does right now (Phase 1.6)
 
 skill-advisor **never writes to SKILL.md** — it only reads and reports.
 
-| Capability | Phase 1 (now) | Phase 2 (planned) |
+| Capability | Phase 1.6 (now) | Phase 2 (planned) |
 |-----------|:---:|:---:|
-| Diagnose skill coverage | ✅ | ✅ |
-| Generate improvement proposals (JSON) | ✅ dry-run only | ✅ |
+| Diagnose skill coverage (`--scan`) | ✅ | ✅ |
+| Generate improvement proposals (`--enrich`) | ✅ dry-run only | ✅ |
 | Apply proposals to SKILL.md | ❌ not available | ✅ via `skill-creator --apply-proposal` |
+| File-change based skill candidates (`--session-review`) | ✅ | ✅ |
+| Error/correction signal analysis (`--session-review`) | ✅ | ✅ |
+| session-retrospective 2-track detection | ✅ | ✅ |
 
 To apply proposals now: review the JSON output, then use `skill-creator` manually.
+
+---
+
+## Architecture (Phase 1.6)
+
+```
+scripts/
+  session-review.py      Orchestrator — coordinates all analysis
+  jsonl_analyzer.py      Collector — parses JSONL for error/correction signals
+  signal_to_skill.py     Mapper — maps signals to skill recommendations (with provenance)
+  constants.py           Shared constants (prevents circular imports)
+
+data/
+  signal-skills.json     Versioned mapping table (schema_version: "1.0")
+```
+
+The signal mapping table is externalized so you can tune it without touching Python code:
+
+```json
+{
+  "schema_version": "1.0",
+  "mappings": [
+    {
+      "id": "test-failure",
+      "triggers": { "error_keywords": ["AssertionError", "test failed"], "min_count": 1 },
+      "skill": "systematic-debugging",
+      "confidence": "high",
+      "evidence_label": "test failure pattern"
+    }
+  ]
+}
+```
 
 ---
 
@@ -149,14 +252,20 @@ skill-advisor audits all three. A skill with none of them is a "ghost skill" —
 # Clone and install
 git clone https://github.com/aniboy2k-gif/skill-advisor
 cp -r skill-advisor ~/.claude/skills/
-# ↑ This copies SKILL.md, scripts/session-review.py, and references/
+# ↑ This copies SKILL.md, scripts/, data/, and references/
 
 # Rebuild the skill index so Claude Code recognises the new skill
-# (This regenerates /tmp/skill-index.json that skill-advisor reads)
 zsh ~/.claude/hooks/skill-index.sh
 ```
 
 Start or restart a Claude Code session — skill-advisor will be available immediately.
+
+### Optional: pair with session-retrospective
+
+```bash
+cd ~/.claude/skills
+git clone https://github.com/accidentalrebel/claude-skill-session-retrospective session-retrospective
+```
 
 ---
 
@@ -185,11 +294,8 @@ Start or restart a Claude Code session — skill-advisor will be available immed
 
 Issue list
 [HIGH]   orphan-skill:     H0 Ghost skill — no triggers defined
-[HIGH]   half-baked-skill: H1 file_path_globs missing
 [MEDIUM] skill-a, skill-b: M1 duplicate glob "**/*.md"
 
-Note: H1-M (manual-only) = skill relies on utterance patterns only,
-      intentionally excluded from the H1 warning.
 ⚠ M1 matches exact strings only — fnmatch path overlap detection coming in Phase 2.
 ```
 
@@ -231,6 +337,8 @@ Note: H1-M (manual-only) = skill relies on utterance patterns only,
 | **exit 1** | `--scan`: actionable findings exist (useful for CI gating) |
 | **exit 2** | Execution failed — file access error, parse error, etc. |
 
+`--session-review --json` keys: `session`, `track`, `stats`, `candidates`, `signal_recommendations`, `proposals`
+
 </details>
 
 ---
@@ -240,18 +348,27 @@ Note: H1-M (manual-only) = skill relies on utterance patterns only,
 - M1 detects **exact string duplicates only** — fnmatch path overlap is Phase 2
 - `--apply` is not available in Phase 1 — apply proposals manually via `skill-creator`
 - `source_type` classification is path-heuristic — official skill impersonation is not detected
-- `--enrich` supports **official** (`anthropics/skills`) and **local** (`.claude/skills/`) skills only — third-party skills are excluded from web-search enrichment
-- `--session-review --confirm` requires an **interactive terminal** — it will hang in non-interactive environments (e.g., Claude Code sessions)
+- `--enrich` supports **official** (`anthropics/skills`) and **local** (`.claude/skills/`) skills only
+- `--session-review --confirm` requires an **interactive terminal**
+- Signal analysis uses a conservative 3-condition gate — some corrections may not be detected (by design)
+- session-retrospective integration: skill-advisor detects installation but does **not** execute its scripts or parse its output
 
 ---
 
 ## Roadmap
 
-### ✅ Phase 1 (current)
+### ✅ Phase 1 (initial)
 - Scan for C1 / H0 / H1 / M1 / I1 issues with severity classification
 - Generate `SkillPatchProposal` JSON (4 proposal types)
 - Automatic fallback scan when `skill-index.json` is unavailable
 - `--session-review`: post-work skill candidate recommendations from JSONL session analysis
+
+### ✅ Phase 1.6 (current)
+- **JSONL signal analysis**: error patterns (`is_error: true`) and correction patterns mapped to skills
+- **Provenance fields**: every recommendation carries `source`, `signal`, `confidence`, `evidence_count`
+- **2-track detection**: auto-detects session-retrospective installation, adapts output accordingly
+- **Versioned mapping table**: `data/signal-skills.json` for tunable signal→skill mapping
+- **constants.py**: shared constants preventing circular imports across analyzer modules
 
 ### 🔜 Phase 1.5 (next milestone)
 - Load event logging in `skill-auto-loader.sh` for direct comparison
@@ -263,6 +380,7 @@ Note: H1-M (manual-only) = skill relies on utterance patterns only,
 - Smarter proposals: confidence scoring with source freshness tracking
 - Trusted source verification for official skills
 - `--session-review` utterance-based skill discovery (semantic analysis)
+- session-retrospective structured JSON exchange (requires author collaboration)
 
 ---
 

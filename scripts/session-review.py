@@ -13,15 +13,42 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Ensure scripts/ dir is on sys.path for sibling imports (constants, jsonl_analyzer, etc.)
+_SCRIPTS_DIR = str(Path(__file__).parent.resolve())
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
-FILE_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
-SKILL_INDEX = Path("/tmp/skill-index.json")
-PROJECTS_BASE = Path.home() / ".claude" / "projects"
-
-EXCLUDE_PREFIXES = (
-    str(Path.home() / ".claude" / "projects"),
-    str(Path.home() / ".claude" / "da-tools"),
+from constants import (  # noqa: E402
+    DATA_DIR,
+    EXCLUDE_PREFIXES,
+    FILE_WRITE_TOOLS,
+    PROJECTS_BASE,
+    SKILL_INDEX,
 )
+from jsonl_analyzer import AnalysisError, analyze_session_signals  # noqa: E402
+from signal_to_skill import map_signals_to_skills  # noqa: E402
+
+_RETRO_SKILL_NAME = "session-retrospective"
+_RETRO_REPO_URL = "https://github.com/accidentalrebel/claude-skill-session-retrospective"
+
+
+def is_retro_available(skills_dir: Path | None = None) -> bool:
+    """session-retrospective 설치 감지 (기능 계약 기반).
+
+    Args:
+        skills_dir: 테스트 주입용. None이면 CLAUDE_SKILLS_DIR 환경변수 → 기본값 순으로 탐색.
+    """
+    env_path = os.environ.get("CLAUDE_SKILLS_DIR")
+    base = skills_dir or (Path(env_path) if env_path else None) or (Path.home() / ".claude" / "skills")
+    retro = base / _RETRO_SKILL_NAME
+    result = (
+        retro.exists()
+        and (retro / "SKILL.md").exists()
+        and (retro / "scripts" / "get-session.sh").exists()
+    )
+    if base != (Path.home() / ".claude" / "skills"):
+        print(f"[INFO] skill-advisor: CLAUDE_SKILLS_DIR 사용: {base}", file=sys.stderr)
+    return result
 
 
 def find_jsonl(confirm: bool = False) -> Path | None:
@@ -193,7 +220,14 @@ def build_proposals(edits: list[dict], candidates: dict[str, dict]) -> list[dict
     return proposals
 
 
-def print_report(jsonl: Path, stats: dict, candidates: dict, proposals: list) -> None:
+def print_report(
+    jsonl: Path,
+    stats: dict,
+    candidates: dict,
+    proposals: list,
+    signal_recs: list | None = None,
+    has_retro: bool = False,
+) -> None:
     import datetime
     mt = datetime.datetime.fromtimestamp(jsonl.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
     print(f"\n## /skill-advisor --session-review\n")
@@ -220,21 +254,54 @@ def print_report(jsonl: Path, stats: dict, candidates: dict, proposals: list) ->
         print("No related skills found for edited files.")
         print("→ Run `/skill-advisor --scan` to check skill coverage.")
 
+    if signal_recs:
+        err_recs = [r for r in signal_recs if r["source"] == "error_signal"]
+        cor_recs = [r for r in signal_recs if r["source"] == "correction_signal"]
+        if err_recs:
+            print("\n---\n### Error-driven Recommendations\n")
+            print(f"{'Skill':<22} {'Signal':<35} {'Confidence':<12} {'Evidence'}")
+            print("-" * 80)
+            for r in sorted(err_recs, key=lambda x: -{"high": 3, "medium": 2, "low": 1}[x["confidence"]]):
+                print(
+                    f"{r['skill']:<22} {r['signal'][:34]:<35} "
+                    f"{r['confidence']:<12} {r['evidence_count']} 건"
+                )
+        if cor_recs:
+            print("\n---\n### Correction-driven Recommendations\n")
+            for r in cor_recs:
+                print(f"  → {r['skill']} ({r['signal']}, {r['evidence_count']}건 수정 감지)")
+
     if proposals:
         print("\n---\n### Improvement Proposals (SkillPatchProposal)\n")
         print("Files edited with no matching skill glob — consider adding globs:\n")
         print(json.dumps(proposals, indent=2, ensure_ascii=False))
         print("\nApply via `skill-creator`. See: /skill-advisor --enrich <skill-name>")
 
+    print()
+    if has_retro:
+        print(f"🔗 session-retrospective 설치 감지 — 상세 회고는 /session-retrospective 실행")
+    else:
+        print(f"💡 TIP: session-retrospective 설치 시 상세 세션 회고 가능")
+        print(f"   {_RETRO_REPO_URL}")
 
-def print_json(jsonl: Path, stats: dict, candidates: dict, proposals: list) -> None:
+
+def print_json(
+    jsonl: Path,
+    stats: dict,
+    candidates: dict,
+    proposals: list,
+    signal_recs: list | None = None,
+    has_retro: bool = False,
+) -> None:
     print(json.dumps({
         "session": str(jsonl),
         "stats": stats,
+        "track": "track1" if has_retro else "track2",
         "candidates": [
             {k: v for k, v in c.items() if k != "_full_path"}
             for c in candidates.values()
         ],
+        "signal_recommendations": signal_recs or [],
         "proposals": proposals,
     }, indent=2, ensure_ascii=False))
 
@@ -259,10 +326,21 @@ def main() -> int:
     candidates = build_candidates(edits, skills)
     proposals = build_proposals(edits, candidates)
 
+    # 시그널 분석 (두 트랙 공통)
+    signal_recs: list = []
+    try:
+        signals = analyze_session_signals(jsonl, max_events=args.max_edits)
+        signal_recs = map_signals_to_skills(signals)
+    except Exception as e:
+        print(f"[WARN] skill-advisor: 시그널 분석 실패 — {e}", file=sys.stderr)
+
+    # 트랙 감지
+    has_retro = is_retro_available()
+
     if args.json_out:
-        print_json(jsonl, stats, candidates, proposals)
+        print_json(jsonl, stats, candidates, proposals, signal_recs, has_retro)
     else:
-        print_report(jsonl, stats, candidates, proposals)
+        print_report(jsonl, stats, candidates, proposals, signal_recs, has_retro)
 
     return 0  # --session-review is informational: exit 0 always on success
 

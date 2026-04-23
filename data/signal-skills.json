@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-23",
+  "description": "Error/correction signal → skill recommendation mapping. Independently implemented (inspired by accidentalrebel/claude-skill-session-retrospective concept).",
+  "mappings": [
+    {
+      "id": "test-failure",
+      "triggers": {
+        "error_keywords": ["AssertionError", "test failed", "FAILED", "pytest", "assertion failed", "Expected", "assert"],
+        "min_count": 1
+      },
+      "skill": "systematic-debugging",
+      "confidence": "high",
+      "evidence_label": "test failure pattern"
+    },
+    {
+      "id": "build-error",
+      "triggers": {
+        "error_keywords": ["TypeError", "SyntaxError", "ImportError", "ModuleNotFoundError", "NameError", "AttributeError", "build failed", "compilation error", "cannot find"],
+        "min_count": 1
+      },
+      "skill": "build-fix",
+      "confidence": "high",
+      "evidence_label": "build/type error pattern"
+    },
+    {
+      "id": "permission-error",
+      "triggers": {
+        "error_keywords": ["PermissionError", "Permission denied", "EACCES", "EPERM"],
+        "min_count": 1
+      },
+      "skill": "systematic-debugging",
+      "confidence": "medium",
+      "evidence_label": "permission error pattern"
+    },
+    {
+      "id": "repeated-correction",
+      "triggers": {
+        "correction_count_min": 3
+      },
+      "skill": "plan",
+      "confidence": "medium",
+      "evidence_label": "repeated user corrections (3+)"
+    },
+    {
+      "id": "file-not-found",
+      "triggers": {
+        "error_keywords": ["FileNotFoundError", "No such file or directory", "ENOENT", "not found"],
+        "min_count": 2
+      },
+      "skill": "systematic-debugging",
+      "confidence": "medium",
+      "evidence_label": "file not found pattern"
+    },
+    {
+      "id": "security-error",
+      "triggers": {
+        "error_keywords": ["Unauthorized", "Forbidden", "401", "403", "authentication", "permission denied"],
+        "min_count": 1
+      },
+      "skill": "security-pipeline",
+      "confidence": "medium",
+      "evidence_label": "security/auth error pattern"
+    }
+  ]
+}
