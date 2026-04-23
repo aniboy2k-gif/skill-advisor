@@ -38,21 +38,21 @@ def test_all_recommendations_have_provenance_fields():
     recs = map_signals_to_skills(signals)
     for i, rec in enumerate(recs):
         missing = PROVENANCE_FIELDS - set(rec.keys())
-        assert not missing, f"추천[{i}] 누락 필드: {missing}. 전체: {rec}"
+        assert not missing, f"recommendation[{i}] missing fields: {missing}. full: {rec}"
 
 
 def test_source_values_are_valid():
     signals = _signals(errors=[{"error_snippet": "AssertionError", "line_index": 1}])
     recs = map_signals_to_skills(signals)
     for rec in recs:
-        assert rec["source"] in VALID_SOURCES, f"잘못된 source: {rec['source']}"
+        assert rec["source"] in VALID_SOURCES, f"invalid source: {rec['source']}"
 
 
 def test_confidence_values_are_valid():
     signals = _signals(errors=[{"error_snippet": "AssertionError", "line_index": 1}])
     recs = map_signals_to_skills(signals)
     for rec in recs:
-        assert rec["confidence"] in VALID_CONFIDENCES, f"잘못된 confidence: {rec['confidence']}"
+        assert rec["confidence"] in VALID_CONFIDENCES, f"invalid confidence: {rec['confidence']}"
 
 
 def test_evidence_count_is_positive_int():
@@ -66,4 +66,4 @@ def test_signal_field_is_nonempty_string():
     signals = _signals(errors=[{"error_snippet": "AssertionError", "line_index": 1}])
     recs = map_signals_to_skills(signals)
     for rec in recs:
-        assert isinstance(rec["signal"], str) and rec["signal"], "signal이 빈 문자열"
+        assert isinstance(rec["signal"], str) and rec["signal"], "signal must be a non-empty string"

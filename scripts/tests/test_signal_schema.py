@@ -1,7 +1,7 @@
 """
 Phase 0 게이트 테스트 — signal-skills.json 스키마 계약 검증.
 
-이 테스트가 GREEN이어야 Phase 1 진입 허용.
+이 테스트가 GREEN이어야 Phase 1 진입 allowed.
 Run: pytest scripts/tests/test_signal_schema.py -v
 """
 from __future__ import annotations
@@ -19,20 +19,20 @@ def _load_schema() -> dict:
 
 
 def test_schema_file_exists():
-    assert SCHEMA_FILE.exists(), f"signal-skills.json 파일 없음: {SCHEMA_FILE}"
+    assert SCHEMA_FILE.exists(), f"signal-skills.json not found: {SCHEMA_FILE}"
 
 
 def test_schema_version_present():
     schema = _load_schema()
-    assert "schema_version" in schema, "schema_version 필드 없음"
-    assert schema["schema_version"] == "1.0", f"예상 버전 1.0, 실제: {schema['schema_version']}"
+    assert "schema_version" in schema, "schema_version field missing"
+    assert schema["schema_version"] == "1.0", f"expected version 1.0, got: {schema['schema_version']}"
 
 
 def test_mappings_present():
     schema = _load_schema()
-    assert "mappings" in schema, "mappings 필드 없음"
-    assert isinstance(schema["mappings"], list), "mappings는 list여야 함"
-    assert len(schema["mappings"]) >= 1, "mappings에 항목이 1개 이상 있어야 함"
+    assert "mappings" in schema, "mappings field missing"
+    assert isinstance(schema["mappings"], list), "mappings must be a list"
+    assert len(schema["mappings"]) >= 1, "mappings must contain at least one entry"
 
 
 def test_each_mapping_has_required_fields():
@@ -40,7 +40,7 @@ def test_each_mapping_has_required_fields():
     required = {"id", "triggers", "skill", "confidence", "evidence_label"}
     for i, m in enumerate(schema["mappings"]):
         missing = required - set(m.keys())
-        assert not missing, f"mappings[{i}] 누락 필드: {missing}"
+        assert not missing, f"mappings[{i}] missing fields: {missing}"
 
 
 def test_mapping_confidence_values():
@@ -48,30 +48,30 @@ def test_mapping_confidence_values():
     valid = {"high", "medium", "low"}
     for i, m in enumerate(schema["mappings"]):
         assert m["confidence"] in valid, (
-            f"mappings[{i}].confidence 값 오류: {m['confidence']!r} (허용: {valid})"
+            f"mappings[{i}].invalid confidence value: {m['confidence']!r} (allowed: {valid})"
         )
 
 
 def test_mapping_ids_unique():
     schema = _load_schema()
     ids = [m["id"] for m in schema["mappings"]]
-    assert len(ids) == len(set(ids)), f"중복 id 발견: {ids}"
+    assert len(ids) == len(set(ids)), f"duplicate ids found: {ids}"
 
 
 def test_triggers_have_valid_structure():
     schema = _load_schema()
     for i, m in enumerate(schema["mappings"]):
         triggers = m["triggers"]
-        assert isinstance(triggers, dict), f"mappings[{i}].triggers는 dict여야 함"
+        assert isinstance(triggers, dict), f"mappings[{i}].triggers must be a dict"
         has_keywords = "error_keywords" in triggers
         has_correction = "correction_count_min" in triggers
         assert has_keywords or has_correction, (
-            f"mappings[{i}].triggers에 error_keywords 또는 correction_count_min 중 하나는 있어야 함"
+            f"mappings[{i}].triggers에 must have error_keywords or correction_count_min"
         )
         if has_keywords:
             assert isinstance(triggers["error_keywords"], list), (
-                f"mappings[{i}].triggers.error_keywords는 list여야 함"
+                f"mappings[{i}].triggers.error_keywords must be a list"
             )
             assert "min_count" in triggers, (
-                f"mappings[{i}].triggers에 min_count 없음"
+                f"mappings[{i}].triggers missing min_count"
             )

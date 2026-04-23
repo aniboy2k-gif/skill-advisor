@@ -1,8 +1,8 @@
 """
-JSONL 세션 분석기 — 오류·수정 시그널 추출.
+JSONL session analyzer — extracts error and correction signals.
 
-독자 구현 (inspired by accidentalrebel/claude-skill-session-retrospective concept).
-Claude Code JSONL은 공개 포맷 기반.
+Independently implemented (inspired by accidentalrebel/claude-skill-session-retrospective concept).
+Based on the public Claude Code JSONL format.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 수정 감지: 부정어 키워드 (보수적 설계 — false negative 허용, false positive 방지 우선)
+# Correction detection keywords — conservative design: false negatives accepted, false positives avoided
 _NEGATION_KW = frozenset([
     "아니", "틀렸", "잘못", "다시해", "틀린",
     "no", "wrong", "redo", "incorrect", "mistake",
@@ -68,14 +68,14 @@ def analyze_session_signals(
         try:
             d = json.loads(line)
         except json.JSONDecodeError:
-            logger.warning("[skill-advisor] line %d: JSON 파싱 오류 — 건너뜀", i)
+            logger.warning("[skill-advisor] line %d: JSON parse error — skipping", i)
             continue
 
         msg_type = d.get("type")
         content = d.get("message", {}).get("content") or []
         if not isinstance(content, list):
             # unknown field 형태 — warn하고 무시
-            logger.debug("[skill-advisor] line %d: content가 list 아님 — 무시", i)
+            logger.debug("[skill-advisor] line %d: content is not a list — ignored", i)
             content = []
 
         if msg_type == "assistant":

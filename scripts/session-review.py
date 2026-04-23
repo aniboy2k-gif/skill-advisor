@@ -33,10 +33,10 @@ _RETRO_REPO_URL = "https://github.com/accidentalrebel/claude-skill-session-retro
 
 
 def is_retro_available(skills_dir: Path | None = None) -> bool:
-    """session-retrospective 설치 감지 (기능 계약 기반).
+    """Detect session-retrospective installation (capability-contract based).
 
     Args:
-        skills_dir: 테스트 주입용. None이면 CLAUDE_SKILLS_DIR 환경변수 → 기본값 순으로 탐색.
+        skills_dir: Inject for testing. When None, checks CLAUDE_SKILLS_DIR env var then the default path.
     """
     env_path = os.environ.get("CLAUDE_SKILLS_DIR")
     base = skills_dir or (Path(env_path) if env_path else None) or (Path.home() / ".claude" / "skills")
@@ -47,7 +47,7 @@ def is_retro_available(skills_dir: Path | None = None) -> bool:
         and (retro / "scripts" / "get-session.sh").exists()
     )
     if base != (Path.home() / ".claude" / "skills"):
-        print(f"[INFO] skill-advisor: CLAUDE_SKILLS_DIR 사용: {base}", file=sys.stderr)
+        print(f"[INFO] skill-advisor: using CLAUDE_SKILLS_DIR: {base}", file=sys.stderr)
     return result
 
 
@@ -264,12 +264,12 @@ def print_report(
             for r in sorted(err_recs, key=lambda x: -{"high": 3, "medium": 2, "low": 1}[x["confidence"]]):
                 print(
                     f"{r['skill']:<22} {r['signal'][:34]:<35} "
-                    f"{r['confidence']:<12} {r['evidence_count']} 건"
+                    f"{r['confidence']:<12} {r['evidence_count']} detected"
                 )
         if cor_recs:
             print("\n---\n### Correction-driven Recommendations\n")
             for r in cor_recs:
-                print(f"  → {r['skill']} ({r['signal']}, {r['evidence_count']}건 수정 감지)")
+                print(f"  → {r['skill']} ({r['signal']}, {r['evidence_count']} corrections detected)")
 
     if proposals:
         print("\n---\n### Improvement Proposals (SkillPatchProposal)\n")
@@ -279,9 +279,9 @@ def print_report(
 
     print()
     if has_retro:
-        print(f"🔗 session-retrospective 설치 감지 — 상세 회고는 /session-retrospective 실행")
+        print(f"🔗 session-retrospective detected — run /session-retrospective for a full retrospective")
     else:
-        print(f"💡 TIP: session-retrospective 설치 시 상세 세션 회고 가능")
+        print(f"💡 TIP: install session-retrospective for a full narrative session retrospective")
         print(f"   {_RETRO_REPO_URL}")
 
 
@@ -332,7 +332,7 @@ def main() -> int:
         signals = analyze_session_signals(jsonl, max_events=args.max_edits)
         signal_recs = map_signals_to_skills(signals)
     except Exception as e:
-        print(f"[WARN] skill-advisor: 시그널 분석 실패 — {e}", file=sys.stderr)
+        print(f"[WARN] skill-advisor: signal analysis failed — {e}", file=sys.stderr)
 
     # 트랙 감지
     has_retro = is_retro_available()

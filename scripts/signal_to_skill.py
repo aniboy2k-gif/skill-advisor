@@ -1,7 +1,7 @@
 """
-시그널 → 스킬 매핑 + Provenance 생성.
+Signal-to-skill mapper with provenance generation.
 
-data/signal-skills.json 기반으로 오류·수정 시그널을 스킬 추천으로 변환한다.
+Converts error/correction signals into skill recommendations using data/signal-skills.json.
 """
 from __future__ import annotations
 
@@ -21,18 +21,18 @@ _SUPPORTED_SCHEMA_VERSION = "1.0"
 
 def _load_mappings() -> list[dict]:
     if not _SCHEMA_FILE.exists():
-        logger.warning("[skill-advisor] signal-skills.json 없음 — 시그널 추천 비활성")
+        logger.warning("[skill-advisor] signal-skills.json not found — signal recommendations disabled")
         return []
     try:
         schema = json.loads(_SCHEMA_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
-        logger.warning("[skill-advisor] signal-skills.json 파싱 실패: %s", e)
+        logger.warning("[skill-advisor] signal-skills.json parse error: %s", e)
         return []
 
     version = schema.get("schema_version", "")
     if version != _SUPPORTED_SCHEMA_VERSION:
         logger.warning(
-            "[skill-advisor] signal-skills.json 버전 불일치: 기대 %s, 실제 %s — 빈 매핑 사용",
+            "[skill-advisor] signal-skills.json version mismatch: expected %s, got %s — using empty mappings",
             _SUPPORTED_SCHEMA_VERSION, version,
         )
         return []
@@ -41,14 +41,14 @@ def _load_mappings() -> list[dict]:
 
 def map_signals_to_skills(signals: dict) -> list[dict]:
     """
-    오류·수정 시그널을 스킬 추천 목록으로 변환한다.
+    Convert error/correction signals into a list of skill recommendations.
 
     Args:
-        signals: analyze_session_signals()의 반환값
+        signals: Return value from analyze_session_signals()
     Returns:
         [{"skill": str, "source": str, "signal": str,
           "confidence": str, "evidence_count": int}, ...]
-        중복 스킬은 evidence_count를 합산하여 단일 항목으로 반환.
+        Duplicate skills are merged by accumulating evidence_count.
     """
     mappings = _load_mappings()
     if not mappings:
@@ -57,7 +57,7 @@ def map_signals_to_skills(signals: dict) -> list[dict]:
     errors = signals.get("errors", [])
     corrections = signals.get("corrections", [])
 
-    # skill → 최선 추천 집계 (dedup)
+    # best-match accumulator per skill (dedup)
     skill_map: dict[str, dict] = {}
 
     for mapping in mappings:
@@ -66,7 +66,7 @@ def map_signals_to_skills(signals: dict) -> list[dict]:
         confidence = mapping["confidence"]
         evidence_label = mapping.get("evidence_label", "")
 
-        # 오류 키워드 매칭
+        # error keyword matching
         keywords = [kw.lower() for kw in triggers.get("error_keywords", [])]
         min_count = triggers.get("min_count", 1)
         if keywords and errors:
@@ -83,7 +83,7 @@ def map_signals_to_skills(signals: dict) -> list[dict]:
                     "evidence_count": len(matched),
                 })
 
-        # 수정 횟수 매칭
+        # correction count matching
         corr_min = triggers.get("correction_count_min")
         if corr_min is not None and len(corrections) >= corr_min:
             _upsert(skill_map, skill, {
@@ -98,7 +98,7 @@ def map_signals_to_skills(signals: dict) -> list[dict]:
 
 
 def _upsert(skill_map: dict, skill: str, rec: dict) -> None:
-    """이미 있으면 evidence_count를 누적, 없으면 삽입."""
+    """Accumulate evidence_count if skill already exists, otherwise insert."""
     if skill in skill_map:
         skill_map[skill]["evidence_count"] += rec["evidence_count"]
     else:

@@ -1,6 +1,6 @@
 ---
 name: skill-advisor
-description: 설치된 스킬의 커버리지를 진단하고 활용법을 안내하는 도구. --scan으로 전체 스킬 상태를 점검하고, --enrich로 특정 스킬의 트리거 개선 제안을 dry-run 출력한다. --session-review로 작업 후 편집 파일 기반 관련 스킬 후보를 추천한다. SKILL.md를 직접 수정하지 않으며, 제안만 출력한다 (read-only 원칙). 스킬 점검, 스킬 진단, 스킬 활용법 확인, 설치된 스킬 분석, 스킬 커버리지 검토, 작업 후 스킬 리뷰 시 활용.
+description: Diagnoses installed skill coverage and surfaces improvement proposals. Use --scan to audit all skills by severity (C1/H0/H1/M1), --enrich for a SkillPatchProposal dry-run on a specific skill, --session-review for post-work skill candidate recommendations based on file edits and error/correction signals. Never modifies SKILL.md directly — read-only principle.
 argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>]'
 ---
 

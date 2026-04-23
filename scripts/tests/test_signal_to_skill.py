@@ -67,14 +67,14 @@ def test_source_is_correction_signal_for_correction():
     signals = _signals(corrections=corrections)
     recs = map_signals_to_skills(signals)
     correction_recs = [r for r in recs if r["source"] == "correction_signal"]
-    assert correction_recs, f"correction_signal 추천 없음. 전체: {recs}"
+    assert correction_recs, f"correction_signal 추천 없음. full: {recs}"
 
 
 def test_confidence_valid_value():
     signals = _signals(errors=[{"error_snippet": "AssertionError", "line_index": 1}])
     recs = map_signals_to_skills(signals)
     for r in recs:
-        assert r["confidence"] in ("high", "medium", "low"), f"잘못된 confidence: {r['confidence']}"
+        assert r["confidence"] in ("high", "medium", "low"), f"invalid confidence: {r['confidence']}"
 
 
 def test_evidence_count_is_int():
@@ -93,4 +93,4 @@ def test_duplicate_skills_deduplicated():
     ])
     recs = map_signals_to_skills(signals)
     skills = [r["skill"] for r in recs]
-    assert len(skills) == len(set(skills)), f"중복 스킬: {skills}"
+    assert len(skills) == len(set(skills)), f"duplicate skills: {skills}"

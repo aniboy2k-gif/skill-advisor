@@ -46,7 +46,7 @@ def test_returns_dict_with_required_keys(tmp_path):
     result = analyze_session_signals(jsonl)
     assert isinstance(result, dict)
     for key in ("errors", "corrections", "stats"):
-        assert key in result, f"결과에 '{key}' 키 없음"
+        assert key in result, f"result missing key '{key}'"
 
 
 def test_errors_is_list(tmp_path):
@@ -73,7 +73,7 @@ def test_stats_has_counts(tmp_path):
 def test_detects_is_error_true(tmp_path):
     jsonl = _make_jsonl([_user_msg([_tool_result(is_error=True, content="FAILED")])], tmp_path)
     result = analyze_session_signals(jsonl)
-    assert len(result["errors"]) == 1, f"오류 1건 기대, 실제: {result['errors']}"
+    assert len(result["errors"]) == 1, f"expected 1 error, got: {result['errors']}"
 
 
 def test_ignores_is_error_false(tmp_path):
