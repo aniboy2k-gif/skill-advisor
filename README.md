@@ -36,6 +36,34 @@ Audits all installed skills and classifies issues by severity:
 
 > ⚠ **Phase 1 limitation**: M1 detects exact string matches only. "No M1" does not guarantee zero conflicts.
 
+### Review post-work skill coverage — `--session-review`
+
+After completing a task, check which installed skills were relevant to files you edited — and which may have missed loading.
+
+Analyzes the current Claude Code session's JSONL file to recommend related skills based on file changes:
+
+```
+/skill-advisor --session-review           → Immediate analysis (most recent session)
+/skill-advisor --session-review --confirm → Choose session interactively
+/skill-advisor --session-review --json    → Machine-readable output
+```
+
+Example output:
+```
+## /skill-advisor --session-review
+
+⚠ Candidate recommendations only — load history not directly verified.
+
+Session: abc123.jsonl  (2026-04-23 09:18, 12365 KB)
+Parsed: 160 file edit events / 758 tool_uses
+
+Related Skill Candidates:
+  [medium] skill-creator  — SKILL.md ← **/.claude/skills/**
+  [low]    doc-coauthoring — README.md ← **/README.md
+```
+
+> **Phase 1 limitation**: Bash command-based file changes are not detected. This is a candidate recommendation, not a definitive diagnosis.
+
 ### Get reviewable improvement proposals — `--enrich [skill-name]`
 
 Reads the target skill's SKILL.md, optionally fetches the official README for `anthropics/skills` sources, and outputs a `SkillPatchProposal[]` array — structured suggestions you review before applying.
@@ -190,12 +218,18 @@ Note: H1-M (manual-only) = skill relies on utterance patterns only,
 - Scan for C1 / H0 / H1 / M1 / I1 issues with severity classification
 - Generate `SkillPatchProposal` JSON (4 proposal types)
 - Automatic fallback scan when `skill-index.json` is unavailable
+- `--session-review`: post-work skill candidate recommendations from JSONL session analysis
+
+### 🔜 Phase 1.5 (next milestone)
+- Load event logging in `skill-auto-loader.sh` for direct comparison
+- Enable `--session-review` to show "actually loaded" vs "should have loaded"
 
 ### 🔜 Phase 2 (planned)
 - Direct apply: send proposals to `skill-creator` automatically
 - Better conflict detection: fnmatch-based path overlap for M1
 - Smarter proposals: confidence scoring with source freshness tracking
 - Trusted source verification for official skills
+- `--session-review` utterance-based skill discovery (semantic analysis)
 
 ---
 

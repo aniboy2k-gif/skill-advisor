@@ -1,13 +1,13 @@
 ---
 name: skill-advisor
-description: 설치된 스킬의 커버리지를 진단하고 활용법을 안내하는 도구. --scan으로 전체 스킬 상태를 점검하고, --enrich로 특정 스킬의 트리거 개선 제안을 dry-run 출력한다. SKILL.md를 직접 수정하지 않으며, 제안만 출력한다 (read-only 원칙). 스킬 점검, 스킬 진단, 스킬 활용법 확인, 설치된 스킬 분석, 스킬 커버리지 검토 시 활용.
+description: 설치된 스킬의 커버리지를 진단하고 활용법을 안내하는 도구. --scan으로 전체 스킬 상태를 점검하고, --enrich로 특정 스킬의 트리거 개선 제안을 dry-run 출력한다. --session-review로 작업 후 편집 파일 기반 관련 스킬 후보를 추천한다. SKILL.md를 직접 수정하지 않으며, 제안만 출력한다 (read-only 원칙). 스킬 점검, 스킬 진단, 스킬 활용법 확인, 설치된 스킬 분석, 스킬 커버리지 검토, 작업 후 스킬 리뷰 시 활용.
 ---
 
 <!--trigger_conditions
 schema_version: "0.1"
 utterance_patterns:
-  ko: ["스킬 점검", "스킬 진단", "스킬 활용법", "스킬 커버리지", "스킬 분석", "스킬 상태", "설치된 스킬", "스킬 추천", "어떤 스킬", "스킬 리뷰", "스킬 확인", "스킬 현황"]
-  en: ["skill check", "skill coverage", "skill audit", "skill usage", "skill advisor", "installed skills", "skill recommendation", "skill review"]
+  ko: ["스킬 점검", "스킬 진단", "스킬 활용법", "스킬 커버리지", "스킬 분석", "스킬 상태", "설치된 스킬", "스킬 추천", "어떤 스킬", "스킬 리뷰", "스킬 확인", "스킬 현황", "작업 후 스킬", "세션 리뷰", "로드되지 않은 스킬"]
+  en: ["skill check", "skill coverage", "skill audit", "skill usage", "skill advisor", "installed skills", "skill recommendation", "skill review", "session review", "missed skill", "post-work skill check"]
 file_path_globs: []
 tool_events: []
 risk_level: "low"
@@ -26,6 +26,7 @@ conflicts_with: []
 /skill-advisor --scan       → 커버리지 진단 (severity 분류)
 /skill-advisor --scan --json → JSON 형식으로 출력
 /skill-advisor --enrich [스킬명]  → 특정 스킬 분석 + SkillPatchProposal dry-run 출력
+/skill-advisor --session-review   → 작업 후 편집 파일 기반 관련 스킬 후보 추천
 ```
 
 ## 역할 경계
@@ -276,6 +277,75 @@ Phase 1: 캐시 없이 매번 검색. fetched_at은 현재 실행 시각으로 �
 - 메이저 변경(1.x → 2.x): breaking — skill-creator --apply-proposal 업데이트 필요
 
 > **승인 게이트**: SkillPatchProposal 출력 후 사용자에게 "이 제안을 skill-creator를 통해 적용할까요?"를 묻는다. 직접 SKILL.md를 수정하지 않는다.
+
+---
+
+## --session-review 모드
+
+작업 완료 후 현재 Claude Code 세션에서 편집한 파일을 기반으로 관련 스킬 후보를 추천한다.
+
+```
+/skill-advisor --session-review                      → 즉시 실행 (기본)
+/skill-advisor --session-review --confirm            → JSONL 세션 선택 후 실행
+/skill-advisor --session-review --max-edits 500      → 파일 변경 이벤트 최대 500개 분석
+/skill-advisor --session-review --json               → JSON 출력
+/skill-advisor --session-review --jsonl [경로]       → 특정 JSONL 파일 분석
+```
+
+**핵심 원칙**: 확정 진단 금지 — 파일 변경 기반 후보 추천만 허용.
+로드 이력은 직접 확인 불가 (Phase 1.5 로드 로그 완료 전).
+
+### 실행 방법
+
+아래 Bash 명령으로 외부 스크립트를 실행한다:
+
+```bash
+SCRIPT_DIR="$(dirname "$0")"
+python3 "~/.claude/skills/skill-advisor/scripts/session-review.py" \
+  [--confirm] [--max-edits N] [--json] [--jsonl PATH]
+```
+
+실제 실행 시 Bash 툴로 아래를 수행한다:
+
+```bash
+python3 ~/.claude/skills/skill-advisor/scripts/session-review.py
+```
+
+`--confirm` 플래그가 있으면 분석 전 JSONL 후보 목록을 표시하고 사용자 선택을 받는다.
+
+### 출력 형식
+
+```
+## /skill-advisor --session-review
+
+⚠ 파일 변경 기반 후보 추천 — 로드 이력 직접 확인 불가.
+  (Phase 1.5 로드 로그 완료 후 직접 대조 가능)
+
+Session: [jsonl 파일명]  ([날짜 시간], [크기] KB)
+Parsed: N file edit events / N tool_uses
+
+---
+### Related Skill Candidates (file-change based)
+[스킬 후보 테이블]
+
+---
+### Improvement Proposals (SkillPatchProposal)
+[편집 파일 중 어떤 glob에도 미매칭된 파일에 대한 glob 추가 제안]
+```
+
+### Phase 1 한계 (SKILL.md 명시)
+
+- Bash shell 명령 기반 파일 변경 미감지
+- 부정 패턴(`!pattern`) 미지원
+- 로드 이력 직접 확인 불가 (Phase 1.5 완료 전)
+- 확정 진단이 아닌 후보 추천
+
+### Phase 1.5 의존성
+
+`--session-review`의 "로드 이력 직접 대조" 기능은 `skill-auto-loader.sh`에 로드 로그 기록이
+추가되어야 한다. Phase 1.5 구현 시 아래 두 파일을 동시에 업데이트해야 한다:
+- `~/.claude/hooks/skill-auto-loader.sh` (로드 이벤트 기록 추가)
+- 이 SKILL.md (로그 경로 및 형식 명시)
 
 ---
 
