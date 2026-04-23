@@ -129,8 +129,79 @@ def test_print_json_excludes_full_path(tmp_path, capsys):
     print_json(f, stats, candidates, [])
     out = capsys.readouterr().out
     data = json.loads(out)
-    for c in data["candidates"]:
+    for c in data["skill_candidates"]:
         assert "_full_path" not in c, f"_full_path should not appear in JSON output: {c}"
+
+
+# ── New: Hard Gate + Security + Track tests ──────────────────────────────────
+
+def test_jsonl_path_outside_projects_base_rejected(tmp_path, capsys):
+    """보안: PROJECTS_BASE 외부 경로 → exit code 2."""
+    import subprocess, sys
+    script = Path(_mod.__file__)
+    result = subprocess.run(
+        [sys.executable, str(script), "--jsonl", "../../../../etc/passwd"],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 2, f"Expected exit 2, got {result.returncode}"
+    assert "ERROR" in result.stderr, "Expected [ERROR] in stderr"
+
+
+def test_track2_when_no_session_id():
+    """CLAUDE_SESSION_ID 없으면 is_retro_available()은 (False, None) 반환."""
+    import os
+    env_backup = os.environ.pop("CLAUDE_SESSION_ID", None)
+    try:
+        available, path = _mod.is_retro_available()
+        assert not available, "CLAUDE_SESSION_ID 없을 때 Track 1이면 안 됨"
+        assert path is None
+    finally:
+        if env_backup is not None:
+            os.environ["CLAUDE_SESSION_ID"] = env_backup
+
+
+def test_hard_gate_candidates_in_json_output(tmp_path, capsys):
+    """JSON 출력에 hard_gate_candidates 키가 포함되어야 한다."""
+    import json as _json
+    jsonl_file = tmp_path / "test.jsonl"
+    jsonl_file.write_text('{"type":"user","message":{"content":[{"type":"text","text":"/plan 실행"}]}}\n')
+    stats = {"total_lines": 1, "tool_uses": 0, "edits_found": 0, "parse_errors": 0}
+    _mod.print_json(
+        jsonl_file, stats, {}, [],
+        hard_gate_candidates=[{"skill": "plan", "detected": True}],
+        hard_gate_warnings=[],
+        slash_commands=["/plan"],
+    )
+    out = capsys.readouterr().out
+    data = _json.loads(out)
+    assert "hard_gate_candidates" in data, "hard_gate_candidates 키 없음"
+    assert data["track"] == "track2", f"track expected track2, got {data['track']}"
+    assert "/plan" in data["slash_commands_found"]
+
+
+def test_slash_command_no_false_positive(tmp_path):
+    """슬래시 커맨드 추출 시 경로(/usr/local) 및 URL 경로 오탐 없음."""
+    import importlib
+    sa_path = Path(__file__).parent.parent / "session_activity.py"
+    spec = importlib.util.spec_from_file_location("session_activity", sa_path)
+    sa_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sa_mod)
+
+    jsonl_file = tmp_path / "test.jsonl"
+    text_with_paths = (
+        'Looking at /usr/local/bin/python3 and https://github.com/owner/repo/issues '
+        '/plan is needed here. Check /skill-advisor for details.'
+    )
+    jsonl_file.write_text(
+        '{"type":"user","message":{"content":[{"type":"text","text":"'
+        + text_with_paths.replace('"', '\\"') + '"}]}}\n'
+    )
+    cmds = sa_mod.extract_slash_commands(jsonl_file)
+    # /plan, /skill-advisor만 허용, /usr /local /bin /python3 /owner /repo /issues는 제외
+    false_positives = [c for c in cmds if c in ("/usr", "/local", "/bin", "/python3", "/owner", "/repo", "/issues")]
+    assert not false_positives, f"False positives detected: {false_positives}"
+    valid = [c for c in cmds if c in ("/plan", "/skill-advisor")]
+    assert len(valid) >= 1, f"Expected at least /plan or /skill-advisor, got: {cmds}"
 
 
 # ── D-H2: H1-E logic correctness ─────────────────────────────────────────────

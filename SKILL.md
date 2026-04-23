@@ -1,15 +1,17 @@
 ---
 name: skill-advisor
-description: Diagnoses installed skill coverage and surfaces improvement proposals. Use --scan to audit all skills by severity (C1/H0/H1/M1), --enrich for a SkillPatchProposal dry-run on a specific skill, --session-review for post-work skill candidate recommendations based on file edits and error/correction signals. Never modifies SKILL.md directly — read-only principle.
+description: "Diagnoses installed skill coverage and surfaces improvement proposals. Use --scan to audit all skills by severity (C1/H0/H1/H1-Y/M1), --enrich for a SkillPatchProposal dry-run on a specific skill, --session-review for post-work analysis covering Hard Gate compliance (estimated), file-edit-based skill candidates, and helpful skill recommendations. Two-track mode — Track 1 (session-retrospective + CLAUDE_SESSION_ID) or Track 2 (built-in JSONL search). Never modifies SKILL.md directly — read-only principle."
 argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>]'
 ---
 
 <!--trigger_conditions
 schema_version: "0.1"
 utterance_patterns:
-  ko: ["스킬 점검", "스킬 진단", "스킬 활용법", "스킬 커버리지", "스킬 분석", "스킬 상태", "설치된 스킬", "스킬 추천", "어떤 스킬", "스킬 리뷰", "스킬 확인", "스킬 현황", "작업 후 스킬", "세션 리뷰", "로드되지 않은 스킬"]
-  en: ["skill check", "skill coverage", "skill audit", "skill usage", "skill advisor", "installed skills", "skill recommendation", "skill review", "session review", "missed skill", "post-work skill check"]
-file_path_globs: []
+  ko: ["스킬 점검", "스킬 진단", "스킬 활용법", "스킬 커버리지", "스킬 분석", "스킬 상태", "설치된 스킬", "스킬 추천", "어떤 스킬", "스킬 리뷰", "스킬 확인", "스킬 현황", "작업 후 스킬", "세션 리뷰", "로드되지 않은 스킬", "Hard Gate 누락", "Hard Gate 확인", "게이트 점검", "세션 회고", "스킬 게이트"]
+  en: ["skill check", "skill coverage", "skill audit", "skill usage", "skill advisor", "installed skills", "skill recommendation", "skill review", "session review", "missed skill", "post-work skill check", "hard gate", "hard gate missed", "hard gate check", "gate compliance", "session retrospective"]
+file_path_globs:
+  - "**/skill-advisor/scripts/**"
+  - "**/hard-gates.json"
 tool_events: []
 risk_level: "low"
 pinned: false
@@ -99,6 +101,7 @@ ARGUMENTS가 있으면 해당 모드에 맞는 헤더를 한 줄 출력한 뒤 �
 - C1: 절대 경로 glob이 존재하지 않는 파일 참조
 - H0: 모든 트리거 없음 (유령 스킬) — globs + events + utterances 모두 비어있음
 - H1: file_path_globs=0, tool_events=0 — 파일 기반 자동 트리거 없음 (utterance 있는 경우)
+- H1-Y: `source_kind=yaml_frontmatter` — YAML frontmatter만 있는 수동 전용 스킬 (INFO)
 - M1: 동일 glob 문자열을 2개 이상 스킬이 선언 (문자열 완전 일치만 감지)
 - I1: description 비어있음
 
@@ -134,8 +137,14 @@ fallback 모드: `~/.claude/skills/*/SKILL.md` 직접 glob 스캔으로 인덱�
 import json, os
 from pathlib import Path
 
-with open("/tmp/skill-index.json") as f:
-    skills = json.load(f)
+data = json.load(open("/tmp/skill-index.json"))
+# v1/v2 하위 호환
+if isinstance(data, list):
+    skills = data
+elif isinstance(data, dict):
+    skills = data.get("skills", [])
+else:
+    skills = []
 
 results = []
 for item in skills:
@@ -144,6 +153,7 @@ for item in skills:
     events      = item.get("tool_events", [])
     desc        = item.get("description", "")
     utterances  = item.get("utterance_patterns", {})
+    source_kind = item.get("source_kind", "trigger_block")
     has_utterances = bool(
         utterances.get("ko") or utterances.get("en")
     )
@@ -156,20 +166,22 @@ for item in skills:
             issues.append({"severity": "critical", "code": "C1",
                            "msg": f"깨진 참조: {g}"})
 
-    # 트리거 분류
-    if len(globs) == 0 and len(events) == 0:
-        if not has_utterances:
-            # H0: 유령 스킬 — 어떤 트리거도 없음
-            issues.append({"severity": "high", "code": "H0",
-                           "msg": "모든 트리거 없음 (유령 스킬) — 호출 방법이 없습니다"})
-        else:
-            # 수동 전용 — utterance_patterns만 있음, H1 경고 제외
-            issues.append({"severity": "info", "code": "H1-M",
-                           "msg": "[수동 전용] utterance 기반 트리거만 존재 — 파일 기반 자동 로드 없음"})
-    elif len(globs) == 0 and len(events) > 0:
-        # H1-E: tool_events 전용 — 의도적 설계, utterance 전용(H1-M)과 동일 처리
-        issues.append({"severity": "info", "code": "H1-E",
-                       "msg": "[이벤트 전용] tool_events 기반 트리거만 존재 — 파일 경로 기반 자동 로드 없음"})
+    # H1-Y: yaml_frontmatter 스킬 — 수동 전용 (자동 로드 불가)
+    if source_kind == "yaml_frontmatter":
+        issues.append({"severity": "info", "code": "H1-Y",
+                       "msg": "[YAML 수동 전용] trigger_conditions 없음 — /skill-creator로 추가 권장"})
+    else:
+        # 트리거 분류 (trigger_block 스킬만 해당)
+        if len(globs) == 0 and len(events) == 0:
+            if not has_utterances:
+                issues.append({"severity": "high", "code": "H0",
+                               "msg": "모든 트리거 없음 (유령 스킬) — 호출 방법이 없습니다"})
+            else:
+                issues.append({"severity": "info", "code": "H1-M",
+                               "msg": "[수동 전용] utterance 기반 트리거만 존재 — 파일 기반 자동 로드 없음"})
+        elif len(globs) == 0 and len(events) > 0:
+            issues.append({"severity": "info", "code": "H1-E",
+                           "msg": "[이벤트 전용] tool_events 기반 트리거만 존재 — 파일 경로 기반 자동 로드 없음"})
 
     # I1: description 비어있음
     if not desc.strip():
@@ -178,6 +190,7 @@ for item in skills:
 
     results.append({
         "skill": skill_name,
+        "source_kind": source_kind,
         "globs": len(globs),
         "events": len(events),
         "has_utterances": has_utterances,
@@ -221,6 +234,7 @@ severity 순 (critical → high → medium → info):
 | H0 | high | 모든 트리거 없음 (유령 스킬) | — |
 | H1-E | info | 이벤트 전용 (tool_events>0, globs=0) | 의도적 설계로 간주, H1-M과 동일 처리 |
 | H1-M | info | 수동 전용 (utterance만 있고 globs=events=0) | skill-advisor 자신 포함 |
+| H1-Y | info | YAML frontmatter 수동 전용 (source_kind=yaml_frontmatter) | 커뮤니티 스킬 기본값 — /skill-creator로 trigger_conditions 추가 권장 |
 | M1 | medium | 동일 glob 문자열 중복 선언 | — |
 | I1 | info | description 비어있음 | — |
 
@@ -320,24 +334,34 @@ Phase 1: 캐시 없이 매번 검색. fetched_at은 현재 실행 시각으로 �
 
 ## --session-review 모드
 
-작업 완료 후 현재 Claude Code 세션에서 편집한 파일을 기반으로 관련 스킬 후보를 추천한다.
+작업 완료 후 현재 Claude Code 세션의 활동을 분석하여 스킬 활용 현황을 진단한다.
+Hard Gate 준수 여부(추정), 파일 편집 기반 스킬 후보, 도움이 됐을 스킬을 함께 보고한다.
 
 ```
 /skill-advisor --session-review                      → 즉시 실행 (기본)
 /skill-advisor --session-review --confirm            → JSONL 세션 선택 후 실행
 /skill-advisor --session-review --max-edits 500      → 파일 변경 이벤트 최대 500개 분석
-/skill-advisor --session-review --json               → JSON 출력
+/skill-advisor --session-review --json               → JSON 출력 (Layer 1 원시 데이터)
 /skill-advisor --session-review --jsonl [경로]       → 특정 JSONL 파일 분석
 ```
 
-**핵심 원칙**: 확정 진단 금지 — 파일 변경 기반 후보 추천만 허용.
+**핵심 원칙**: 확정 진단 금지 — 추정 기반 후보 탐지만 허용.
 로드 이력은 직접 확인 불가 (Phase 1.5 로드 로그 완료 전).
+
+### 두 트랙 동작
+
+| | Track 1 | Track 2 |
+|---|---|---|
+| 조건 | `session-retrospective` 스킬 설치 + `CLAUDE_SESSION_ID` 환경변수 설정 | 자동 fallback |
+| JSONL 소스 | `get-session.sh` (세션 ID 기반, 정확) | cwd 해시 기반 탐색 |
+| 분석 내용 | **동일** | **동일** |
+| 출력 | `[Track 1: session-retrospective]` | `[Track 2: built-in]` |
+
+Track 1은 session-retrospective 설치 후 `CLAUDE_SESSION_ID` 환경변수가 설정된 세션에서 자동으로 활성화된다.
 
 ### 실행 방법
 
-아래 Bash 명령으로 외부 스크립트를 실행한다:
-
-실제 실행 시 Bash 툴로 아래를 수행한다:
+Bash 툴로 아래를 실행한다:
 
 ```bash
 python3 ~/.claude/skills/skill-advisor/scripts/session-review.py
@@ -345,32 +369,38 @@ python3 ~/.claude/skills/skill-advisor/scripts/session-review.py
 
 `--confirm` 플래그가 있으면 분석 전 JSONL 후보 목록을 표시하고 사용자 선택을 받는다.
 
-### 출력 형식
+### Layer 2: Claude 해석 지시
+
+`session-review.py`가 출력한 JSON을 받아 다음 섹션을 생성한다:
+
+**섹션 3 — 트리거되었어야 할 스킬:**
+- `hard_gate_candidates` 중 `detected=false`이고 `triggered_by`가 비어 있지 않은 항목
+- Hard Gate(★) 기준 조건 감지됨 → 실행 미확인 상태를 표로 표시
+- "이번 작업 상황": `edited_files` + `slash_commands_found` + `triggered_by`로 맥락 생성
 
 ```
-## /skill-advisor --session-review
+⚠ Hard Gate (CLAUDE.md 기준, 트리거 감지됨 — 실행 미확인 [ESTIMATED])
 
-⚠ 파일 변경 기반 후보 추천 — 로드 이력 직접 확인 불가.
-  (Phase 1.5 로드 로그 완료 후 직접 대조 가능)
-
-Session: [jsonl 파일명]  ([날짜 시간], [크기] KB)
-Parsed: N file edit events / N tool_uses
-
----
-### Related Skill Candidates (file-change based)
-[스킬 후보 테이블]
-
----
-### Improvement Proposals (SkillPatchProposal)
-[편집 파일 중 어떤 glob에도 미매칭된 파일에 대한 glob 추가 제안]
+| 스킬 | 트리거 조건 | 이번 작업 상황 | 결과 |
+|------|-----------|--------------|------|
+| verification-before-completion | ★ 완료 선언 전 필수 | SKILL.md 편집, /plan 실행 | 미확인 |
 ```
 
-### Phase 1 한계 (SKILL.md 명시)
+**섹션 4 — 도움이 됐을 스킬:**
+- `skill_candidates` (file-glob 매칭 기반)
+- `hard_gate_candidates` 중 `triggered_by` 있는 항목
+- `signal_recommendations` (에러 신호 기반)
 
-- Bash shell 명령 기반 파일 변경 미감지
-- 부정 패턴(`!pattern`) 미지원
-- 로드 이력 직접 확인 불가 (Phase 1.5 완료 전)
-- 확정 진단이 아닌 후보 추천
+> ⚠ `hard_gate_candidates`는 JSONL 슬래시 커맨드 탐지 + 파일 신호 기반 추정 `[ESTIMATED]`.
+> Phase 1.5 로드 로그 완료 전까지 신뢰도가 제한적이다.
+
+### Known Limitations
+
+- "이번 작업 상황" 컬럼은 Claude LLM 해석 — JSONL 데이터 품질에 의존
+- Hard Gate 탐지는 JSONL user 텍스트 슬래시 커맨드 + 편집 파일 신호 기반 `[ESTIMATED]`
+- Track 2: 프로젝트 경로 이동 시 JSONL 매칭 실패 가능
+- CLAUDE.md 파싱은 특정 마크다운 형식(한글 ★ 게이트 표)에만 작동 — 다른 형식 사용자는 커스텀 게이트 누락 가능
+- `--jsonl` 경로는 `~/.claude/projects/` 또는 `/tmp` 하위만 허용 (보안 제한)
 
 ### Phase 1.5 의존성
 

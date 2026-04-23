@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "last_updated": "2026-04-23",
+  "description": "Standard Hard Gates from CLAUDE.md skill trigger table",
+  "gates": [
+    {
+      "skill": "systematic-debugging",
+      "trigger_pattern": "버그·테스트 실패·예기치 않은 동작",
+      "trigger_pattern_en": "bug, test failure, unexpected behavior",
+      "session_signals": ["error", "exception", "ImportError", "pytest", "failed", "traceback", "AssertionError"]
+    },
+    {
+      "skill": "plan",
+      "trigger_pattern": "새 기능 구현 전 (3파일+·아키텍처·API 변경·SKILL.md 수정)",
+      "trigger_pattern_en": "new feature (3+ files), architecture, API change",
+      "session_signals": ["SKILL.md"]
+    },
+    {
+      "skill": "security-pipeline",
+      "trigger_pattern": "API·인증·보안 관련 설계 시",
+      "trigger_pattern_en": "API, auth, security design",
+      "session_signals": ["auth", "security", "credentials", "token", "OWASP", "password", "secret"]
+    },
+    {
+      "skill": "verification-before-completion",
+      "trigger_pattern": "코드·기능 구현 완료 선언 전",
+      "trigger_pattern_en": "before claiming completion",
+      "session_signals": ["완료", "done", "finished", "complete", "구현 완료"]
+    },
+    {
+      "skill": "vercel-react-best-practices",
+      "trigger_pattern": "React 컴포넌트 설계·구현 시",
+      "trigger_pattern_en": "React component design/implementation",
+      "session_signals": [".tsx", ".jsx", "React", "component"]
+    },
+    {
+      "skill": "handoff-verify",
+      "trigger_pattern": "서브에이전트 작업 완료 검증 시",
+      "trigger_pattern_en": "sub-agent task completion verification",
+      "session_signals": ["subagent", "sub-agent", "agent completed", "서브에이전트"]
+    }
+  ]
+}
