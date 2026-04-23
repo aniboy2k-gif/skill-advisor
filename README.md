@@ -122,6 +122,7 @@ skill-advisor audits all three. A skill with none of them is a "ghost skill" —
 # Clone and install
 git clone https://github.com/aniboy2k-gif/skill-advisor
 cp -r skill-advisor ~/.claude/skills/
+# ↑ This copies SKILL.md, scripts/session-review.py, and references/
 
 # Rebuild the skill index so Claude Code recognises the new skill
 # (This regenerates /tmp/skill-index.json that skill-advisor reads)
@@ -135,10 +136,12 @@ Start or restart a Claude Code session — skill-advisor will be available immed
 ## Usage
 
 ```
-/skill-advisor                       → Full scan (default)
-/skill-advisor --scan                → Coverage audit with severity labels
-/skill-advisor --scan --json         → JSON output for automation
-/skill-advisor --enrich <skill-name> → Deep analysis + SkillPatchProposal output
+/skill-advisor                          → Full scan (default)
+/skill-advisor --scan                   → Coverage audit with severity labels
+/skill-advisor --scan --json            → JSON output for automation
+/skill-advisor --enrich <skill-name>    → Deep analysis + SkillPatchProposal output
+/skill-advisor --session-review         → Post-work skill candidate recommendations
+/skill-advisor --session-review --confirm → Choose session interactively
 ```
 
 ### Example `--scan` output
@@ -196,8 +199,8 @@ Note: H1-M (manual-only) = skill relies on utterance patterns only,
 | **stdin** | None |
 | **stdout** | Text report; `--json` → JSON array |
 | **stderr** | Execution error messages |
-| **exit 0** | Scan completed — no issues found |
-| **exit 1** | Scan completed — actionable findings exist |
+| **exit 0** | `--scan`: no issues / `--session-review`: always (informational tool) |
+| **exit 1** | `--scan`: actionable findings exist (useful for CI gating) |
 | **exit 2** | Execution failed — file access error, parse error, etc. |
 
 </details>
