@@ -1,6 +1,7 @@
 ---
 name: skill-advisor
 description: 설치된 스킬의 커버리지를 진단하고 활용법을 안내하는 도구. --scan으로 전체 스킬 상태를 점검하고, --enrich로 특정 스킬의 트리거 개선 제안을 dry-run 출력한다. --session-review로 작업 후 편집 파일 기반 관련 스킬 후보를 추천한다. SKILL.md를 직접 수정하지 않으며, 제안만 출력한다 (read-only 원칙). 스킬 점검, 스킬 진단, 스킬 활용법 확인, 설치된 스킬 분석, 스킬 커버리지 검토, 작업 후 스킬 리뷰 시 활용.
+argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>]'
 ---
 
 <!--trigger_conditions
@@ -18,6 +19,43 @@ conflicts_with: []
 # /skill-advisor
 
 > 설치된 스킬 커버리지 진단 + 활용법 안내 도구. **read-only 원칙** — SKILL.md를 직접 수정하지 않는다.
+
+---
+
+## ARGUMENTS 없이 호출된 경우
+
+ARGUMENTS가 비어 있으면 아래 메시지를 출력한 후 **기본 동작(--scan)을 실행**한다.
+
+```
+/skill-advisor  [--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>]
+
+Options:
+  (없음 / --scan)                    설치된 전체 스킬 커버리지 진단 (기본)
+  --scan --json                      JSON 형식으로 진단 결과 출력 (CI/자동화용)
+  --enrich <skill-name>              특정 스킬 심층 분석 + SkillPatchProposal JSON 출력
+  --session-review                   작업 후 편집 파일 기반 관련 스킬 후보 추천
+  --session-review --confirm         JSONL 세션 직접 선택 (⚠ 대화형 터미널 전용)
+  --session-review --json            JSON 형식으로 session-review 결과 출력
+  --session-review --jsonl <path>    특정 JSONL 파일 분석
+```
+
+---
+
+## 모드 진입 헤더 (각 모드 실행 전 출력)
+
+ARGUMENTS가 있으면 해당 모드에 맞는 헤더를 한 줄 출력한 뒤 실행한다:
+
+| ARGUMENTS | 헤더 출력 |
+|-----------|---------|
+| 없음 / `--scan` | `▶ /skill-advisor --scan  (전체 스킬 커버리지 진단)` |
+| `--scan --json` | `▶ /skill-advisor --scan --json  (JSON 출력)` |
+| `--enrich <name>` | `▶ /skill-advisor --enrich <name>  (심층 분석 + SkillPatchProposal)` |
+| `--session-review` | `▶ /skill-advisor --session-review  (편집 파일 기반 스킬 후보 추천)` |
+| `--session-review --confirm` | `▶ /skill-advisor --session-review --confirm  (세션 선택 후 분석)` |
+| `--session-review --json` | `▶ /skill-advisor --session-review --json  (JSON 출력)` |
+| `--session-review --jsonl <path>` | `▶ /skill-advisor --session-review --jsonl <path>  (지정 세션 분석)` |
+
+---
 
 ## 사용법
 
