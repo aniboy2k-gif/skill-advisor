@@ -255,7 +255,7 @@ def main() -> int:
     else:
         print_report(jsonl, stats, candidates, proposals)
 
-    return 1 if (candidates or proposals) else 0
+    return 0  # --session-review is informational: exit 0 always on success
 
 
 if __name__ == "__main__":
