@@ -343,6 +343,93 @@ Issue list
 
 ---
 
+## Configuration: Hard Gates
+
+> **What this is**: a *lightweight JSON configuration file*, not a stable plugin API.
+> The schema may change before v2.0 — fork or pin a commit if you depend on it.
+
+`data/hard-gates.json` lists which skill `--session-review` should expect to have run when certain signals appear in a session.
+A Hard Gate is a *rule* that tells `--session-review` which skill should have been used; the tool then **flags missing gates**. It does **not** automatically run the skill.
+
+**How matching works** (read this first):
+- Matching is **literal**: case-sensitive substring checks against the session JSONL — not semantic / NLP matching.
+- Only the `session_signals` array is matched. The `trigger_pattern` / `trigger_pattern_en` fields are **informational metadata only** (human-readable; not used for matching).
+
+**Source of truth**: `data/hard-gates.json` is the source of truth for gate definitions; this section documents that file.
+
+### Bundled default gates (v1.0)
+
+The bundled six gates come from the maintainer's real-world Claude Code workflow and are provided as defaults — they are **not** official Claude Code rules.
+
+| Skill | When it should fire (intent) | Example signals (English; JSON also has Korean) |
+|-------|-------------------------------|--------------------------------------------------|
+| `/systematic-debugging` | A bug, test failure, or unexpected behavior | `error`, `traceback`, `pytest`, `AssertionError` |
+| `/plan` | A new feature spans 3+ files, an architectural change, or an API change | `SKILL.md` *(this gate's signal coverage is intentionally narrow — the trigger intent above is broader than the single keyword that fires it; if you add your own copy of this gate, pick more distinctive signals)* |
+| `/security-pipeline` | API, authentication, or security work | `auth`, `credentials`, `token`, `password` |
+| `/verification-before-completion` | Right before claiming work is complete | `done`, `finished`, `complete` |
+| `/vercel-react-best-practices` | Designing or implementing React components | `.tsx`, `.jsx`, `React`, `component` |
+| `/handoff-verify` | A sub-agent task has completed and needs independent verification | `subagent`, `sub-agent`, `agent completed` |
+
+> **Korean signals**: Some entries in the JSON also include Korean keywords (e.g. `완료`, `서브에이전트`). They are present because Claude Code sessions may contain mixed-language prompts and completion claims; the matcher treats them no differently from English keywords. See `data/hard-gates.json` for the full list.
+
+### Data format (v1.0)
+
+This is **not** a JSON Schema — it's a description of the file's shape.
+
+```json
+{
+  "schema_version": "1.0",
+  "last_updated": "YYYY-MM-DD",
+  "description": "Free-text description of where these gates come from",
+  "gates": [
+    {
+      "skill": "skill-name",
+      "trigger_pattern": "fire condition (free-form, may be in any language)",
+      "trigger_pattern_en": "fire condition (English)",
+      "session_signals": ["keyword1", "keyword2", "..."]
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `schema_version` | string | `"1.0"` for this format. Adding new optional fields is non-breaking; removing or renaming fields is breaking and requires a version bump. |
+| `last_updated` | string (`YYYY-MM-DD`) | Recommended to update when the file changes; not enforced. |
+| `description` | string | Human-readable origin of the gate set. |
+| `gates` | array | Order is used for display only — it does not affect matching priority. |
+| `gates[].skill` | string | The skill name `--session-review` will surface in its missing-gate list. |
+| `gates[].trigger_pattern` | string | Informational metadata only (any language). Not used at runtime. |
+| `gates[].trigger_pattern_en` | string | Informational metadata only (English). Not used at runtime. |
+| `gates[].session_signals` | string[] | The only field actually matched. Case-sensitive substring matches against the session JSONL. |
+
+### Adding a custom gate (in your fork or local clone)
+
+You can add gates to your own copy of the file without code changes — as long as the skill name exists in your environment and the chosen signals actually appear in your session JSONL.
+
+1. Open `data/hard-gates.json`.
+2. Append a new entry to the `gates` array using the format above.
+3. Pick `session_signals` keywords that uniquely indicate the trigger pattern in your own session JSONL.
+4. Optionally bump `last_updated`.
+5. Validate the **JSON syntax** before committing:
+   ```bash
+   python3 -m json.tool data/hard-gates.json > /dev/null && echo "JSON syntax OK"
+   # or, if you have jq:
+   jq empty data/hard-gates.json && echo "JSON syntax OK"
+   ```
+   > This only checks JSON syntax — it does **not** check semantic validity (e.g. that the skill name exists in your environment, that signals are well chosen, or that fields are not duplicated). A bundled JSON-Schema validator is on the roadmap (see *Out of scope* below).
+6. Run `--session-review` against a session that should fire the new gate to confirm it triggers as expected.
+
+> **Best practice**: choose distinctive signals (typically 4+ characters and unique to your context) to avoid false-positive matches in unrelated text — for example, `traceback` is safer than `bug`, which would also match words like `debugger`.
+
+### Out of scope (v1.0)
+
+- **`tier` axis** — Some advanced setups classify gates by when they should run (e.g. before edit, after response). This schema does not model that yet.
+- **Programmatic JSON-Schema validation** — Not bundled. Roadmap item.
+- **Adding a 7th bundled default** (e.g. `/check-context-size`) — Tracked separately; users are free to add it as a custom gate locally.
+
+---
+
 ## Limitations
 
 - M1 detects **exact string duplicates only** — fnmatch path overlap is Phase 2
