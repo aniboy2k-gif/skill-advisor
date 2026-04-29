@@ -16,6 +16,8 @@
 - You want a safety check before editing a skill's configuration manually
 - You want to know which of your skills have no file-based auto-trigger set up
 - You want error and correction patterns from your session mapped to relevant skills
+- You want to check if installed skills have newer upstream versions available
+- You want to bulk-update skills from GitHub, npm, or pip in one command
 
 ---
 
@@ -92,6 +94,37 @@ Each signal-based recommendation carries **provenance**: `source`, `signal`, `co
 
 Reads the target skill's SKILL.md, optionally fetches the official README for `anthropics/skills` sources, and outputs a `SkillPatchProposal[]` array — structured suggestions you review before applying.
 
+### Check and apply upstream skill updates — `--update`
+
+Keep your installed skills in sync with their upstream sources (GitHub, npm, pip). skill-advisor tracks each skill's source URL in `~/.claude/skill-sources.json` and compares SHA256 hashes to detect updates.
+
+```
+/skill-advisor --update                     → Check all skills for updates (dry-run)
+/skill-advisor --update <skill-name>        → Check a specific skill
+/skill-advisor --update --apply             → Apply updates (y/N confirmation per skill)
+/skill-advisor --update --apply --yes       → Apply all updates automatically (CI mode)
+/skill-advisor --update --apply <skill>     → Apply update to one skill
+/skill-advisor --update --json              → Machine-readable output
+```
+
+**Channel behaviour:**
+
+| Channel | `upstream_type` | check | apply |
+|---------|----------------|-------|-------|
+| GitHub raw | `anthropic_official` · `microsoft` · `community` | SHA256 diff | Replace SKILL.md, preserve `trigger_conditions` |
+| npm | `npm` | `npm outdated` + `npm audit` | Advisory (print command) — v2.0 will auto-install |
+| pip | `pip` | `pip list --outdated` | Advisory (print command) — never auto-installs |
+| Local custom | `local_custom` | — | Not applicable |
+
+**Safety features:**
+- **Atomic apply**: `backup → tmp write → verify → rename`. If verify fails, `.bak` is restored automatically.
+- **`trigger_conditions` preserved**: your local trigger blocks survive GitHub raw updates.
+- **npm guard**: if a `node_modules` SKILL.md contains `trigger_conditions`, `--apply` is blocked until you relocate the block with `skill-creator`.
+
+**Exit codes:** `0` up-to-date · `1` updates available · `2` fetch error · `3` apply failed (rollback OK) · `4` apply + rollback both failed (`.bak` path printed)
+
+**SSOT:** `~/.claude/skill-sources.json` — tracks 65+ skills, upstream URLs, channels, and last-check timestamps.
+
 ### Machine-readable output — `--scan --json`
 
 Returns a JSON array for CI pipelines or shell scripts.
@@ -161,22 +194,32 @@ skill-advisor **never writes to SKILL.md** — it only reads and reports.
 | File-change based skill candidates (`--session-review`) | ✅ | ✅ |
 | Error/correction signal analysis (`--session-review`) | ✅ | ✅ |
 | session-retrospective 2-track detection | ✅ | ✅ |
+| Upstream update check (`--update`) | ✅ GitHub/npm/pip | ✅ |
+| Upstream update apply (`--update --apply`) | ✅ GitHub raw; npm/pip advisory | ✅ full npm/pip |
 
 To apply proposals now: review the JSON output, then use `skill-creator` manually.
 
 ---
 
-## Architecture (Phase 1.6)
+## Architecture (Phase 1.7)
 
 ```
 scripts/
-  session-review.py      Orchestrator — coordinates all analysis
+  session-review.py      Orchestrator — coordinates session analysis
+  update.py              Orchestrator — coordinates upstream update checks and applies
   jsonl_analyzer.py      Collector — parses JSONL for error/correction signals
   signal_to_skill.py     Mapper — maps signals to skill recommendations (with provenance)
   constants.py           Shared constants (prevents circular imports)
+  channels/
+    github_raw.py        Channel handler — SHA256 diff, atomic apply, trigger_conditions preserve
+    npm.py               Channel handler — npm outdated + audit, advisory apply
+    pip.py               Channel handler — pip list --outdated, advisory apply
 
 data/
   signal-skills.json     Versioned mapping table (schema_version: "1.0")
+
+~/.claude/
+  skill-sources.json     SSOT — 65+ skills, upstream URLs, channels, last-check timestamps
 ```
 
 The signal mapping table is externalized so you can tune it without touching Python code:
@@ -450,12 +493,21 @@ You can add gates to your own copy of the file without code changes — as long 
 - Automatic fallback scan when `skill-index.json` is unavailable
 - `--session-review`: post-work skill candidate recommendations from JSONL session analysis
 
-### ✅ Phase 1.6 (current)
+### ✅ Phase 1.6
 - **JSONL signal analysis**: error patterns (`is_error: true`) and correction patterns mapped to skills
 - **Provenance fields**: every recommendation carries `source`, `signal`, `confidence`, `evidence_count`
 - **2-track detection**: auto-detects session-retrospective installation, adapts output accordingly
 - **Versioned mapping table**: `data/signal-skills.json` for tunable signal→skill mapping
 - **constants.py**: shared constants preventing circular imports across analyzer modules
+
+### ✅ Phase 1.7 (current)
+- **`--update` mode**: check and apply upstream skill updates from GitHub raw URLs, npm, and pip
+- **`scripts/channels/`**: channel-scoped handlers (github_raw, npm, pip) with per-channel semantics
+- **Atomic apply** (GitHub raw): backup → write to temp → verify frontmatter → rename. Rollback on failure.
+- **`trigger_conditions` preservation**: local trigger blocks survive upstream SKILL.md replacements
+- **npm guard**: blocks `--apply` when `trigger_conditions` lives inside `node_modules` (data loss prevention)
+- **`~/.claude/skill-sources.json`**: SSOT for 65+ skill upstream URLs, channels, and last-check state
+- **Exit code contract**: 0 up-to-date · 1 updates available · 2 fetch error · 3 apply+rollback OK · 4 apply+rollback failed
 
 ### 🔜 Phase 1.5 (next milestone)
 - Load event logging in `skill-auto-loader.sh` for direct comparison

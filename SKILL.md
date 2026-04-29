@@ -1,7 +1,7 @@
 ---
 name: skill-advisor
-description: "Diagnoses installed skill coverage and surfaces improvement proposals. Use --scan to audit all skills by severity (C1/H0/H1/H1-Y/M1), --enrich for a SkillPatchProposal dry-run on a specific skill, --session-review for post-work analysis covering Hard Gate compliance (estimated), file-edit-based skill candidates, and helpful skill recommendations. Two-track mode — Track 1 (session-retrospective + CLAUDE_SESSION_ID) or Track 2 (built-in JSONL search). Never modifies SKILL.md directly — read-only principle."
-argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>]'
+description: "Diagnoses installed skill coverage and surfaces improvement proposals. Use --scan to audit all skills by severity (C1/H0/H1/H1-Y/M1), --enrich for a SkillPatchProposal dry-run on a specific skill, --session-review for post-work analysis covering Hard Gate compliance (estimated), file-edit-based skill candidates, and helpful skill recommendations. Two-track mode — Track 1 (session-retrospective + session_id via hook stdin JSON) or Track 2 (built-in JSONL search). Never modifies SKILL.md directly — read-only principle."
+argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>] | --update [<skill>] [--apply] [--yes] [--dry-run] [--json] [--keep-backup]'
 ---
 
 <!--trigger_conditions
@@ -11,7 +11,6 @@ utterance_patterns:
   en: ["skill check", "skill coverage", "skill audit", "skill usage", "skill advisor", "installed skills", "skill recommendation", "skill review", "session review", "missed skill", "post-work skill check", "hard gate", "hard gate missed", "hard gate check", "gate compliance", "session retrospective"]
 file_path_globs:
   - "**/skill-advisor/scripts/**"
-  - "**/hard-gates.json"
 tool_events: []
 risk_level: "low"
 pinned: false
@@ -29,7 +28,7 @@ conflicts_with: []
 ARGUMENTS가 비어 있으면 아래 메시지를 출력한 후 **기본 동작(--scan)을 실행**한다.
 
 ```
-/skill-advisor  [--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>]
+/skill-advisor  [--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>] | --update [<skill>] [--apply] [--yes] [--json]
 
 Options:
   (없음 / --scan)                    설치된 전체 스킬 커버리지 진단 (기본)
@@ -39,6 +38,12 @@ Options:
   --session-review --confirm         JSONL 세션 직접 선택 (⚠ 대화형 터미널 전용)
   --session-review --json            JSON 형식으로 session-review 결과 출력
   --session-review --jsonl <path>    특정 JSONL 파일 분석
+  --update [<skill>]                 업스트림 URL 기반 업데이트 체크 (전체 또는 지정 스킬)
+  --update --apply [<skill>]         업데이트 실제 적용 (trigger_conditions 자동 보존)
+  --update --apply --yes             자동 진행 모드 (y/N 확인 생략, CI 전용)
+  --update --json                    JSON 출력 (CI/자동화용)
+  --update --keep-backup             apply 후 .bak 파일 보존
+  --update --refresh-sources         skill-sources.json 재생성 안내
 ```
 
 ---
@@ -56,6 +61,9 @@ ARGUMENTS가 있으면 해당 모드에 맞는 헤더를 한 줄 출력한 뒤 �
 | `--session-review --confirm` | `▶ /skill-advisor --session-review --confirm  (세션 선택 후 분석)` |
 | `--session-review --json` | `▶ /skill-advisor --session-review --json  (JSON 출력)` |
 | `--session-review --jsonl <path>` | `▶ /skill-advisor --session-review --jsonl <path>  (지정 세션 분석)` |
+| `--update [<skill>]` | `▶ /skill-advisor --update  (업스트림 업데이트 체크 및 적용)` |
+| `--update --apply` | `▶ /skill-advisor --update --apply  (업데이트 적용 — y/N 확인)` |
+| `--update --apply --yes` | `▶ /skill-advisor --update --apply --yes  (자동 진행 모드)` |
 
 ---
 
@@ -99,6 +107,8 @@ ARGUMENTS가 있으면 해당 모드에 맞는 헤더를 한 줄 출력한 뒤 �
 
 **검출 가능:**
 - C1: 절대 경로 glob이 존재하지 않는 파일 참조
+- C1-b: `hard-gates.json`에 선언된 Hard Gate의 file_path가 미설치 상태 (SSOT ↔ 설치 불일치)
+- C2: Hard Gate(Tier A/B/C) 스킬이 `source_kind=yaml_frontmatter`로만 존재 — 자동 로드 트리거 없음
 - H0: 모든 트리거 없음 (유령 스킬) — globs + events + utterances 모두 비어있음
 - H1: file_path_globs=0, tool_events=0 — 파일 기반 자동 트리거 없음 (utterance 있는 경우)
 - H1-Y: `source_kind=yaml_frontmatter` — YAML frontmatter만 있는 수동 전용 스킬 (INFO)
@@ -146,6 +156,22 @@ elif isinstance(data, dict):
 else:
     skills = []
 
+# hard-gates.json 로드 (C2·C1-b 판정용 SSOT). 없거나 스키마 미지원이면 빈 셋 fallback.
+hard_gate_map = {}   # id → gate dict
+hard_gate_ids_critical = set()  # Tier A/B/C id set
+hg_path = Path(os.path.expanduser("~/.claude/hard-gates.json"))
+if hg_path.exists():
+    try:
+        hg = json.loads(hg_path.read_text(encoding="utf-8"))
+        for g in hg.get("gates", []):
+            gid = g.get("id")
+            if gid:
+                hard_gate_map[gid] = g
+                if g.get("tier") in ("A", "B", "C"):
+                    hard_gate_ids_critical.add(gid)
+    except (json.JSONDecodeError, OSError):
+        pass
+
 results = []
 for item in skills:
     skill_name  = item.get("skill", "?")
@@ -165,6 +191,13 @@ for item in skills:
         if g.startswith("/") and not Path(g).exists():
             issues.append({"severity": "critical", "code": "C1",
                            "msg": f"깨진 참조: {g}"})
+
+    # C2: Hard Gate 스킬이면서 source_kind=yaml_frontmatter — 자동 로드 불가
+    if skill_name in hard_gate_ids_critical and source_kind == "yaml_frontmatter":
+        gate = hard_gate_map.get(skill_name, {})
+        tier = gate.get("tier", "?")
+        issues.append({"severity": "critical", "code": "C2",
+                       "msg": f"Hard Gate(Tier {tier}) 스킬이 yaml_frontmatter 전용 — 자동 로드 트리거 없음, 유명무실"})
 
     # H1-Y: yaml_frontmatter 스킬 — 수동 전용 (자동 로드 불가)
     if source_kind == "yaml_frontmatter":
@@ -196,6 +229,21 @@ for item in skills:
         "has_utterances": has_utterances,
         "issues": issues
     })
+
+# C1-b: SSOT ↔ 설치 불일치 (스킬별이 아닌 전역 단계)
+installed_skill_ids = {item.get("skill") for item in skills}
+for gate_id, gate in hard_gate_map.items():
+    fp_raw = gate.get("file_path", "")
+    fp = Path(os.path.expanduser(fp_raw)) if fp_raw else None
+    if fp and not fp.exists():
+        # hard-gates.json은 선언했지만 파일 미존재
+        results.append({
+            "skill": f"<SSOT:{gate_id}>",
+            "source_kind": "ssot_only",
+            "globs": 0, "events": 0, "has_utterances": False,
+            "issues": [{"severity": "critical", "code": "C1-b",
+                        "msg": f"SSOT 선언 Hard Gate 미설치: {gate_id} → {fp_raw}"}]
+        })
 ```
 
 **3단계 — M1 중복 glob 감지**
@@ -231,6 +279,8 @@ severity 순 (critical → high → medium → info):
 | 코드 | severity | 의미 | 자동 분류 예외 |
 |------|----------|------|--------------|
 | C1 | critical | 존재하지 않는 절대 경로 참조 | — |
+| C1-b | critical | SSOT(hard-gates.json) 선언 Hard Gate가 파일 시스템에 미설치 | — |
+| C2 | critical | Hard Gate(Tier A/B/C) 스킬이 source_kind=yaml_frontmatter 전용 — 자동 로드 트리거 없음 | — |
 | H0 | high | 모든 트리거 없음 (유령 스킬) | — |
 | H1-E | info | 이벤트 전용 (tool_events>0, globs=0) | 의도적 설계로 간주, H1-M과 동일 처리 |
 | H1-M | info | 수동 전용 (utterance만 있고 globs=events=0) | skill-advisor 자신 포함 |
@@ -352,12 +402,12 @@ Hard Gate 준수 여부(추정), 파일 편집 기반 스킬 후보, 도움이 �
 
 | | Track 1 | Track 2 |
 |---|---|---|
-| 조건 | `session-retrospective` 스킬 설치 + `CLAUDE_SESSION_ID` 환경변수 설정 | 자동 fallback |
+| 조건 | `session-retrospective` 스킬 설치 + session_id 획득 가능 (hook stdin JSON 1순위 / env var fallback) | 자동 fallback |
 | JSONL 소스 | `get-session.sh` (세션 ID 기반, 정확) | cwd 해시 기반 탐색 |
 | 분석 내용 | **동일** | **동일** |
 | 출력 | `[Track 1: session-retrospective]` | `[Track 2: built-in]` |
 
-Track 1은 session-retrospective 설치 후 `CLAUDE_SESSION_ID` 환경변수가 설정된 세션에서 자동으로 활성화된다.
+Track 1은 session-retrospective 설치 후 session_id 획득 가능한 세션에서 자동 활성화된다. `CLAUDE_SESSION_ID` 환경변수는 2026-05-01까지 deprecation fallback으로만 유효.
 
 ### 실행 방법
 
@@ -433,6 +483,69 @@ python3 ~/.claude/skills/skill-advisor/scripts/session-review.py
 | 웹 검색 실패 | 로컬 분석만 + `[웹 검색 실패]` 표시 | 1 |
 | JSON 파싱 오류 | 오류 메시지 stderr + 즉시 종료 | 2 |
 | 파일 접근 권한 오류 | 오류 메시지 stderr + 즉시 종료 | 2 |
+
+---
+
+---
+
+## --update 모드
+
+> `--scan/--enrich/--session-review`는 **read-only 진단 도구** — SKILL.md 수정 절대 금지.
+> `--update --apply`는 **업데이트 도구** — 사용자 확인 후 upstream 내용 적용 허용.
+> skill-advisor 자신의 SKILL.md 업데이트는 자기 참조 방지를 위해 항상 금지.
+
+### 채널별 동작 매트릭스
+
+| 채널 (`upstream_type`) | check (기본) | apply |
+|----------------------|-------------|-------|
+| `github_raw` / `anthropic_official` / `microsoft` / `community` | SHA256 비교 + diff 요약 | backup→apply→verify→atomic rename |
+| `npm` | npm outdated + npm audit | v1.0: 명령어 출력만 (직접 설치 안 함) |
+| `pip` | pip list --outdated | v1.0: 명령어 출력만 (직접 설치 안 함) |
+| `local_custom` | 체크 없음 (항상 local-custom) | 해당 없음 |
+
+### 실행 단계
+
+```bash
+SKILL_DIR="<skill-advisor scripts 경로>"
+
+# 1. check (기본)
+python3 "$SKILL_DIR/update.py" [<skill>] [--json]
+
+# 2. apply (github_raw 채널만 자동 적용; npm/pip는 명령어 출력)
+python3 "$SKILL_DIR/update.py" [<skill>] --apply [--yes] [--keep-backup]
+```
+
+**실행 전 계획 출력**: `--apply` 전 채널별 동작·부작용 등급을 항상 표로 출력한 후 `y/N` 확인. `--yes` 플래그 시 확인 생략 (CI 모드).
+
+### exit code contract
+
+| 코드 | 의미 |
+|------|------|
+| 0 | 성공 (최신 상태) |
+| 1 | 업데이트 가능 항목 있음 |
+| 2 | 실행 실패 (fetch 오류 등) |
+| 3 | apply 실패, rollback 완료 |
+| 4 | apply 실패 + rollback 실패 (데이터 손실 위험 — .bak 경로 출력) |
+
+### local_overrides 보존 (github_raw 채널)
+
+1. 로컬 SKILL.md에서 `<!--trigger_conditions...-->` 블록 추출
+2. upstream 내용으로 교체 (atomic rename)
+3. trigger_conditions 블록을 YAML frontmatter 직후 재삽입
+
+**npm 채널 주의**: node_modules 내 SKILL.md에 trigger_conditions가 있으면 `--apply` 차단.
+`skill-creator`로 trigger_conditions를 기본 SKILL.md로 이전 후 재실행 필요.
+
+### SSOT
+
+`~/.claude/skill-sources.json` — 65개+ 스킬의 upstream URL·채널·상태 정보.
+`scripts/update.py` 오케스트레이터, `scripts/channels/{github_raw,npm,pip}.py` 채널별 핸들러.
+
+### Known Limitations (v1.0)
+
+- npm/pip --apply: 명령어 출력만 (직접 실행 없음) → v2.0에서 지원 예정
+- trigger_conditions SKILL.md 분리: skill-index.sh 리팩터링 후 v2.0에서 지원
+- 동시 실행 락: v2.0 예정 (현재 atomic write로 최소 보호)
 
 ---
 
