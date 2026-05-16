@@ -29,6 +29,7 @@ from jsonl_analyzer import AnalysisError, analyze_session_signals  # noqa: E402
 from signal_to_skill import map_signals_to_skills  # noqa: E402
 from hard_gate_parser import load_hard_gates  # noqa: E402
 from session_activity import extract_slash_commands  # noqa: E402
+from lib.session_id import extract_session_id  # noqa: E402
 
 _RETRO_SKILL_NAME = "session-retrospective"
 _RETRO_REPO_URL = "https://github.com/accidentalrebel/claude-skill-session-retrospective"
@@ -43,7 +44,7 @@ def is_retro_available(skills_dir: Path | None = None) -> tuple[bool, str | None
 
     Track 1 requirements:
         1. session-retrospective skill installed (SKILL.md + get-session.sh present)
-        2. CLAUDE_SESSION_ID environment variable set
+        2. session_id 획득 가능 (hook stdin .session_id 1순위 / CLAUDE_SESSION_ID env var 2순위·deprecation)
         3. get-session.sh exits 0
 
     Args:
@@ -66,8 +67,8 @@ def is_retro_available(skills_dir: Path | None = None) -> tuple[bool, str | None
         print("[WARN] skill-advisor: get-session.sh가 심볼릭 링크 — Track 2로 전환", file=sys.stderr)
         return False, None
 
-    # CLAUDE_SESSION_ID 사전 확인
-    session_id = os.environ.get("CLAUDE_SESSION_ID", "").strip()
+    # session_id 획득 (1순위: hook stdin JSON — 지원 시 / 2순위: env var deprecation fallback)
+    session_id = extract_session_id() or ""
     if not session_id:
         return False, None
 
@@ -257,24 +258,43 @@ def build_candidates(edits: list[dict], skills: list[dict]) -> dict[str, dict]:
                     seen.add(key)
                     conf = glob_confidence(g)
                     cur = per_skill.get(name)
-                    if not cur or order[conf] > order[cur["confidence"]]:
+                    if not cur:
                         per_skill[name] = {
                             "skill": name,
                             "file": Path(f).name,
                             "_full_path": f,
                             "glob": g,
                             "confidence": conf,
-                            "matched_files": cur["matched_files"] + 1 if cur else 1,
+                            "matched_files": 1,
+                            "matched_paths": [f],
                         }
-                    elif cur:
+                    elif order[conf] > order[cur["confidence"]]:
+                        prev_paths = cur["matched_paths"]
+                        prev_paths.append(f)
+                        per_skill[name] = {
+                            "skill": name,
+                            "file": Path(f).name,
+                            "_full_path": f,
+                            "glob": g,
+                            "confidence": conf,
+                            "matched_files": len(prev_paths),
+                            "matched_paths": prev_paths,
+                        }
+                    else:
                         cur["matched_files"] += 1
+                        cur["matched_paths"].append(f)
 
     return per_skill
 
 
 def build_proposals(edits: list[dict], candidates: dict[str, dict]) -> list[dict]:
     from datetime import datetime, timezone
-    matched_paths = {c["_full_path"] for c in candidates.values()}
+    matched_paths: set[str] = set()
+    for c in candidates.values():
+        for p in c.get("matched_paths", []):
+            matched_paths.add(p)
+        if "_full_path" in c:
+            matched_paths.add(c["_full_path"])
     unmatched = [
         e["file"] for e in edits
         if e["file"] not in matched_paths
@@ -298,24 +318,57 @@ def build_proposals(edits: list[dict], candidates: dict[str, dict]) -> list[dict
     return proposals
 
 
+def _load_ssot_tier_map() -> dict[str, str]:
+    """SSOT(~/.claude/hard-gates.json)에서 id → tier 매핑을 로드한다.
+
+    CSR #561 S2에서 도입된 SSOT와 skill-advisor/data/hard-gates.json은 별개 파일이다.
+    Tier coverage 요약을 위해 SSOT의 id·tier 쌍만 참조하며, 파싱 실패 시 빈 dict.
+    """
+    ssot = Path.home() / ".claude" / "hard-gates.json"
+    if not ssot.exists():
+        return {}
+    try:
+        data = json.loads(ssot.read_text(encoding="utf-8"))
+        return {g["id"]: g.get("tier", "?") for g in data.get("gates", []) if g.get("id")}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def build_hard_gate_candidates(
     edits: list[dict],
     slash_commands: list[str],
     error_signals: list[dict],
+    session_id: str | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Hard Gate 트리거 후보 탐지.
 
     Returns:
         (candidates, warnings)
-        candidates: detected=True means slash command found in session;
-                    detected=False means not found but trigger signals present.
+        detected=True     : slash command 실행 감지
+        detected="artifact": gate-artifacts/.done 마커 확인 (hook 방식 처리)
+        detected=False    : 미감지
     """
     gates, warnings = load_hard_gates()
+    ssot_tier_map = _load_ssot_tier_map()
     invoked = {cmd.lstrip("/") for cmd in slash_commands}
+
+    # gate-artifacts 디렉토리에서 .done 마커 확인 (JSONL 기반 — stale 마커 방지)
+    _gate_dir = Path.home() / ".claude" / "gate-artifacts"
+    _done_suffix = f".{session_id}" if session_id else ""
+
     results = []
     for gate in gates:
         skill = gate.get("skill", "")
-        detected = skill in invoked
+        detected: bool | str = skill in invoked
+        detection_basis = "slash_command_found" if detected else "JSONL keyword match [ESTIMATED]"
+
+        # hook 방식 게이트: gate-artifacts/<skill>.done.<session_id> 마커 탐지
+        if not detected and session_id:
+            done_file = _gate_dir / f"{skill}.done{_done_suffix}"
+            if done_file.exists():
+                detected = "artifact"
+                detection_basis = "gate-artifact .done 마커 확인 (hook 방식 처리)"
+
         triggered_by: list[str] = []
         for sig in gate.get("session_signals", []):
             sig_lower = sig.lower()
@@ -334,15 +387,38 @@ def build_hard_gate_candidates(
                     break
         results.append({
             "skill": skill,
+            "tier": ssot_tier_map.get(skill, "?"),
             "trigger_pattern": gate.get("trigger_pattern", ""),
             "source": gate.get("source", "hard-gates.json"),
             "detected": detected,
             "triggered_by": triggered_by[:3],
-            "detection_basis": (
-                "slash_command_found" if detected else "JSONL keyword match [ESTIMATED]"
-            ),
+            "detection_basis": detection_basis,
         })
     return results, warnings
+
+
+def build_tier_coverage_summary(candidates: list[dict]) -> dict[str, dict]:
+    """Tier별 coverage 집계.
+
+    Returns:
+        {'A': {'total': N, 'detected': M, 'skills': [...]},
+         'B': {...}, 'C': {...}, 'D': {...}, '?': {...}}
+    """
+    tiers: dict[str, dict] = {}
+    for c in candidates:
+        tier = c.get("tier", "?")
+        entry = tiers.setdefault(tier, {"total": 0, "detected": 0, "skills": []})
+        entry["total"] += 1
+        detected_val = c.get("detected")
+        # detected=True (slash) | detected="artifact" (hook .done) | detected=False
+        # triggered_by는 트리거 조건만 충족 — 실제 실행 증거 아님 → detected 카운트 제외
+        if detected_val:
+            entry["detected"] += 1
+        entry["skills"].append({
+            "skill": c.get("skill", ""),
+            "detected": detected_val if detected_val else bool(c.get("triggered_by")),
+        })
+    return tiers
 
 
 def print_report(
@@ -409,6 +485,31 @@ def print_report(
         print(json.dumps(proposals, indent=2, ensure_ascii=False))
         print("\nApply via `skill-creator`. See: /skill-advisor --enrich <skill-name>")
 
+    # Tier Coverage 요약 (SSOT 기반)
+    if hard_gate_candidates:
+        tier_coverage = build_tier_coverage_summary(hard_gate_candidates)
+        if tier_coverage:
+            print("\n---\n### Tier Coverage (SSOT ~/.claude/hard-gates.json 기준)\n")
+            for tier in ("A", "B", "C", "D", "?"):
+                info = tier_coverage.get(tier)
+                if not info:
+                    continue
+                def _skill_badge(s: dict) -> str:
+                    d = s.get("detected")
+                    if d is True:
+                        return f"{s['skill']}✓"
+                    if d == "artifact":
+                        return f"{s['skill']}🔶"
+                    return s["skill"]
+
+                skills_brief = ", ".join(_skill_badge(s) for s in info["skills"])
+                print(
+                    f"- Tier {tier}: {info['detected']}/{info['total']} detected — "
+                    f"{skills_brief}"
+                )
+            print("  ℹ 'detected' = slash command 실행 감지 OR 파일/에러 신호 매칭 [ESTIMATED]")
+            print("  🔶 = gate-artifact .done 마커 확인 (hook 방식 처리 — 정상 동작)")
+
     print()
     if has_retro:
         print(f"🔗 session-retrospective detected — run /session-retrospective for a full retrospective")
@@ -429,6 +530,7 @@ def print_json(
     slash_commands: list | None = None,
     edits: list | None = None,
 ) -> None:
+    tier_coverage = build_tier_coverage_summary(hard_gate_candidates or [])
     print(json.dumps({
         "session": str(jsonl),
         "track": "track1" if has_retro else "track2",
@@ -441,6 +543,7 @@ def print_json(
         ],
         "hard_gate_candidates": hard_gate_candidates or [],
         "hard_gate_warnings": hard_gate_warnings or [],
+        "tier_coverage": tier_coverage,
         "signal_recommendations": signal_recs or [],
         "proposals": proposals,
         "session_stats": stats,
@@ -502,8 +605,12 @@ def main() -> int:
     # 슬래시 커맨드 추출 + Hard Gate 후보 탐지
     slash_commands = extract_slash_commands(jsonl, max_events=args.max_edits * 2)
     error_signals = [r for r in signal_recs if r.get("source") == "error_signal"]
+    # session_id: JSONL 파일명(UUID)에서 추출 — standalone 실행 시 env var 미의존
+    _jsonl_stem = jsonl.stem if jsonl else ""
+    _session_id_from_jsonl = _jsonl_stem if (len(_jsonl_stem) > 30 and "-" in _jsonl_stem) else None
+    _current_session_id = _session_id_from_jsonl or extract_session_id() or None
     hard_gate_candidates, gate_warnings = build_hard_gate_candidates(
-        edits, slash_commands, error_signals
+        edits, slash_commands, error_signals, session_id=_current_session_id
     )
 
     if args.json_out:

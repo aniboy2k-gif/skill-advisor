@@ -148,12 +148,12 @@ def test_jsonl_path_outside_projects_base_rejected(tmp_path, capsys):
 
 
 def test_track2_when_no_session_id():
-    """CLAUDE_SESSION_ID 없으면 is_retro_available()은 (False, None) 반환."""
+    """session_id 소스(hook stdin JSON 1순위 / env var 2순위) 모두 없으면 (False, None) 반환."""
     import os
     env_backup = os.environ.pop("CLAUDE_SESSION_ID", None)
     try:
         available, path = _mod.is_retro_available()
-        assert not available, "CLAUDE_SESSION_ID 없을 때 Track 1이면 안 됨"
+        assert not available, "session_id 없을 때 Track 1이면 안 됨"
         assert path is None
     finally:
         if env_backup is not None:
@@ -230,3 +230,45 @@ def test_h1e_classification_for_events_only_skill():
     assert all(s == "info" for s in h1e_severities), (
         f"H1-E must be info level: {h1e_severities}"
     )
+
+
+# S4 Phase 7.3 — Tier coverage 확장 테스트
+def test_tier_coverage_summary_basic():
+    """build_tier_coverage_summary: 빈 리스트는 빈 dict, 항목은 Tier별 집계."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from session_review import build_tier_coverage_summary  # type: ignore
+
+    empty = build_tier_coverage_summary([])
+    assert empty == {}
+
+    candidates = [
+        {"skill": "security-pipeline", "tier": "A", "detected": True, "triggered_by": []},
+        {"skill": "check-context-size", "tier": "A", "detected": False, "triggered_by": []},
+        {"skill": "verification-before-completion", "tier": "B", "detected": False, "triggered_by": ["file:foo"]},
+        {"skill": "handoff-verify", "tier": "B", "detected": False, "triggered_by": []},
+        {"skill": "plan", "tier": "C", "detected": True, "triggered_by": []},
+    ]
+    summary = build_tier_coverage_summary(candidates)
+    assert summary["A"]["total"] == 2
+    assert summary["A"]["detected"] == 1  # security-pipeline detected=True
+    assert summary["B"]["total"] == 2
+    # triggered_by는 트리거 조건만 충족 — 실제 실행 증거 아님 → detected 카운트 제외
+    # (build_tier_coverage_summary 함수 주석 정합)
+    assert summary["B"]["detected"] == 0
+    assert summary["C"]["total"] == 1
+    assert summary["C"]["detected"] == 1  # plan detected=True
+
+
+def test_load_ssot_tier_map_fallback(tmp_path, monkeypatch):
+    """_load_ssot_tier_map: SSOT 없거나 parse fail이면 빈 dict 반환."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from session_review import _load_ssot_tier_map  # type: ignore
+
+    # home을 tmp_path로 바꿔 SSOT 부재 시뮬레이션
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    result = _load_ssot_tier_map()
+    assert result == {}

@@ -17,7 +17,7 @@
     },
     {
       "skill": "security-pipeline",
-      "trigger_pattern": "API·인증·보안 관련 설계 시",
+      "trigger_pattern": "API·인증·보안·HIL·권한·감사 로그 관련 설계 시",
       "trigger_pattern_en": "API, auth, security design",
       "session_signals": ["auth", "security", "credentials", "token", "OWASP", "password", "secret"]
     },
