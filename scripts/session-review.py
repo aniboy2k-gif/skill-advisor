@@ -340,13 +340,21 @@ def build_hard_gate_candidates(
     error_signals: list[dict],
     session_id: str | None = None,
 ) -> tuple[list[dict], list[str]]:
-    """Hard Gate 트리거 후보 탐지.
+    """Hard Gate 트리거 후보 탐지 (CSR #825 schema_version 2).
 
     Returns:
         (candidates, warnings)
-        detected=True     : slash command 실행 감지
-        detected="artifact": gate-artifacts/.done 마커 확인 (hook 방식 처리)
-        detected=False    : 미감지
+
+    detected (v2, 4 string status):
+        "executed"           : slash_command_found 매칭 (실행 evidence)
+        "triggered"          : triggered_by 비어있지 않음 (조건 매칭, 실행 미확인 — CSR #825 C-A1 회피)
+        "artifact_confirmed" : gate-artifacts/.done 마커 확인
+        "miss"               : 모든 조건 미매칭
+
+    legacy_detected (v1, deprecation 60일 → 2026-07-23):
+        bool | "artifact" (기존 schema 호환)
+
+    schema_version: 2
     """
     gates, warnings = load_hard_gates()
     ssot_tier_map = _load_ssot_tier_map()
@@ -359,15 +367,20 @@ def build_hard_gate_candidates(
     results = []
     for gate in gates:
         skill = gate.get("skill", "")
-        detected: bool | str = skill in invoked
-        detection_basis = "slash_command_found" if detected else "JSONL keyword match [ESTIMATED]"
+        slash_matched = skill in invoked
+
+        # v1 legacy_detected (60일 deprecation)
+        legacy_detected: bool | str = slash_matched
+        detection_basis = "slash_command_found" if slash_matched else "JSONL keyword match [ESTIMATED]"
 
         # hook 방식 게이트: gate-artifacts/<skill>.done.<session_id> 마커 탐지
-        if not detected and session_id:
+        artifact_confirmed = False
+        if not slash_matched and session_id:
             done_file = _gate_dir / f"{skill}.done{_done_suffix}"
             if done_file.exists():
-                detected = "artifact"
+                legacy_detected = "artifact"
                 detection_basis = "gate-artifact .done 마커 확인 (hook 방식 처리)"
+                artifact_confirmed = True
 
         triggered_by: list[str] = []
         for sig in gate.get("session_signals", []):
@@ -385,16 +398,109 @@ def build_hard_gate_candidates(
                     if label not in triggered_by:
                         triggered_by.append(label)
                     break
+
+        # v2 detected (4 string status — CSR #825 C-A1 회피, triggered_by 비어있지 않으면 격상)
+        if slash_matched:
+            detected_v2 = "executed"
+        elif artifact_confirmed:
+            detected_v2 = "artifact_confirmed"
+        elif triggered_by:
+            detected_v2 = "triggered"   # CSR #825 핵심 변경 — false negative 차단
+        else:
+            detected_v2 = "miss"
+
         results.append({
             "skill": skill,
             "tier": ssot_tier_map.get(skill, "?"),
             "trigger_pattern": gate.get("trigger_pattern", ""),
             "source": gate.get("source", "hard-gates.json"),
-            "detected": detected,
+            "detected": detected_v2,           # v2 (4 string status, CSR #825)
+            "legacy_detected": legacy_detected, # v1 (60일 deprecation 2026-07-23)
             "triggered_by": triggered_by[:3],
             "detection_basis": detection_basis,
+            "schema_version": 2,
         })
     return results, warnings
+
+
+def build_unified_skill_view(
+    hard_gate_candidates: list[dict],
+    slash_commands: list[str],
+    skill_candidates: list[dict],
+    signal_recommendations: list[dict],
+    top_n: int = 10,
+) -> dict:
+    """unified_skill_view — Hard Gate + slash_command + file-glob + signal 통합 view.
+
+    Ordering rule (CSR #825 E):
+        1. Hard Gate (Tier A → B → C → D → ?)
+        2. slash_command (Hard Gate에 미포함된 명령)
+        3. file-glob (skill_candidates)
+        4. signal_recommendations
+
+    top_n cap: 기본 10 (CW-HIGH-2 visual complexity 회피)
+    """
+    seen_skills: set[str] = set()
+    view: list[dict] = []
+
+    # 1. Hard Gate (Tier 순서)
+    tier_order = ["A", "B", "C", "D", "?"]
+    for tier in tier_order:
+        for hgc in hard_gate_candidates:
+            if hgc.get("tier") == tier and hgc["skill"] not in seen_skills:
+                view.append({
+                    "rank": len(view) + 1,
+                    "skill": hgc["skill"],
+                    "source": "hard_gate",
+                    "tier": tier,
+                    "status": hgc.get("detected", "miss"),
+                })
+                seen_skills.add(hgc["skill"])
+
+    # 2. slash_command (Hard Gate에 미포함)
+    for cmd in slash_commands:
+        skill = cmd.lstrip("/")
+        if skill not in seen_skills:
+            view.append({
+                "rank": len(view) + 1,
+                "skill": skill,
+                "source": "slash_command",
+            })
+            seen_skills.add(skill)
+
+    # 3. skill_candidates (file-glob)
+    for sc in skill_candidates:
+        skill = sc.get("skill", "")
+        if skill and skill not in seen_skills:
+            view.append({
+                "rank": len(view) + 1,
+                "skill": skill,
+                "source": "file_glob",
+                "matched_pattern": sc.get("matched_pattern", ""),
+            })
+            seen_skills.add(skill)
+
+    # 4. signal_recommendations
+    for sr in signal_recommendations:
+        skill = sr.get("skill", "")
+        if skill and skill not in seen_skills:
+            view.append({
+                "rank": len(view) + 1,
+                "skill": skill,
+                "source": "signal",
+                "signal": sr.get("signal", ""),
+            })
+            seen_skills.add(skill)
+
+    total = len(view)
+    truncated = total > top_n
+    return {
+        "unified_skill_view": view[:top_n],
+        "total_candidates": total,
+        "top_n_cap": top_n,
+        "truncated": truncated,
+        "truncation_note": f"Total {total} candidates, showing top {top_n}" if truncated else None,
+    }
 
 
 def build_tier_coverage_summary(candidates: list[dict]) -> dict[str, dict]:
@@ -554,14 +660,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="skill-advisor --session-review")
     parser.add_argument("--confirm", action="store_true", help="Choose session interactively")
     parser.add_argument("--max-edits", type=int, default=200, help="Max file edit events to analyze")
-    parser.add_argument("--jsonl", type=str, default=None, help="Explicit JSONL path")
+    parser.add_argument("--jsonl", type=str, default=None, help="Explicit JSONL path (절대 우선순위)")
     parser.add_argument("--json", action="store_true", dest="json_out", help="JSON output")
+    # CSR #829 #2 — --session-scan alias 추가 (사용자 typo 보호)
+    parser.add_argument("--session-scan", action="store_true", dest="session_scan_alias",
+                        help="alias for --session-review (CSR #829 #2)")
     args = parser.parse_args()
 
     # 트랙 감지 (JSONL 결정 전 수행 — Track 1은 JSONL을 직접 제공)
     has_retro, retro_jsonl_path = is_retro_available()
 
-    # JSONL 결정: 우선순위 --jsonl > Track1 > find_jsonl
+    # JSONL 결정: 우선순위 --jsonl > Track1 > find_jsonl (CSR #829 #3 — 절대 우선순위 보장)
     if args.jsonl:
         # --jsonl 경로 검증 (PROJECTS_BASE 또는 /tmp 하위만 허용)
         import tempfile as _tf
@@ -577,6 +686,9 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+        # CSR #829 #3 — 명시 사용 가시성 로그 (Track1 자동 detection 회피 확인)
+        print(f"[INFO] --jsonl 명시 사용: {requested.name} (Track1·자동 detection skip)",
+              file=sys.stderr)
         jsonl: Path | None = requested
     elif retro_jsonl_path:
         jsonl = Path(retro_jsonl_path)
@@ -595,10 +707,11 @@ def main() -> int:
     proposals = build_proposals(edits, candidates)
 
     # 시그널 분석 (두 트랙 공통)
+    # CSR #812: edits 전달로 domain_globs 컨텍스트 매칭 활성화 (build-fix false positive 방지)
     signal_recs: list = []
     try:
         signals = analyze_session_signals(jsonl, max_events=args.max_edits)
-        signal_recs = map_signals_to_skills(signals)
+        signal_recs = map_signals_to_skills(signals, edits=edits)
     except Exception as e:
         print(f"[WARN] skill-advisor: signal analysis failed — {e}", file=sys.stderr)
 

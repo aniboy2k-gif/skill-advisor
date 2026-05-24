@@ -1,7 +1,7 @@
 ---
 name: skill-advisor
-description: "Diagnoses installed skill coverage and surfaces improvement proposals. Use --scan to audit all skills by severity (C1/H0/H1/H1-Y/M1), --enrich for a SkillPatchProposal dry-run on a specific skill, --session-review for post-work analysis covering Hard Gate compliance (estimated), file-edit-based skill candidates, and helpful skill recommendations. Two-track mode — Track 1 (session-retrospective + session_id via hook stdin JSON) or Track 2 (built-in JSONL search). Never modifies SKILL.md directly — read-only principle."
-argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>] | --update [<skill>] [--apply] [--yes] [--dry-run] [--json] [--keep-backup]'
+description: "(hook)"
+argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>] | --update [<skill>] [--apply] [--yes] [--dry-run] [--json] [--keep-backup] [--no-listing-audit] | --listing-audit [--apply] [--json]'
 ---
 
 <!--trigger_conditions
@@ -37,13 +37,18 @@ Options:
   --session-review                   작업 후 편집 파일 기반 관련 스킬 후보 추천
   --session-review --confirm         JSONL 세션 직접 선택 (⚠ 대화형 터미널 전용)
   --session-review --json            JSON 형식으로 session-review 결과 출력
-  --session-review --jsonl <path>    특정 JSONL 파일 분석
+  --session-review --jsonl <path>    특정 JSONL 파일 분석 (절대 우선순위 — Track1 자동 detection skip)
+  --session-scan                     alias for --session-review (CSR #829 #2, 2026-05-24)
   --update [<skill>]                 업스트림 URL 기반 업데이트 체크 (전체 또는 지정 스킬)
   --update --apply [<skill>]         업데이트 실제 적용 (trigger_conditions 자동 보존)
   --update --apply --yes             자동 진행 모드 (y/N 확인 생략, CI 전용)
   --update --json                    JSON 출력 (CI/자동화용)
   --update --keep-backup             apply 후 .bak 파일 보존
   --update --refresh-sources         skill-sources.json 재생성 안내
+  --update --no-listing-audit        apply 후 자동 listing-audit 실행 억제
+  --listing-audit                    skillListing 예산 진단 (shortened 예측 + hook 최적화 후보)
+  --listing-audit --apply            hook 스킬 description "(hook)"으로 원자적 수정
+  --listing-audit --json             JSON 형식으로 진단 결과 출력
 ```
 
 ---
@@ -62,8 +67,10 @@ ARGUMENTS가 있으면 해당 모드에 맞는 헤더를 한 줄 출력한 뒤 �
 | `--session-review --json` | `▶ /skill-advisor --session-review --json  (JSON 출력)` |
 | `--session-review --jsonl <path>` | `▶ /skill-advisor --session-review --jsonl <path>  (지정 세션 분석)` |
 | `--update [<skill>]` | `▶ /skill-advisor --update  (업스트림 업데이트 체크 및 적용)` |
-| `--update --apply` | `▶ /skill-advisor --update --apply  (업데이트 적용 — y/N 확인)` |
-| `--update --apply --yes` | `▶ /skill-advisor --update --apply --yes  (자동 진행 모드)` |
+| `--update --apply` | `▶ /skill-advisor --update --apply  (업데이트 적용 — y/N 확인, 완료 후 listing-audit --apply 자동 실행)` |
+| `--update --apply --yes` | `▶ /skill-advisor --update --apply --yes  (자동 진행 모드, 완료 후 listing-audit --apply 자동 실행)` |
+| `--listing-audit` | `▶ /skill-advisor --listing-audit  (skillListing 예산 진단)` |
+| `--listing-audit --apply` | `▶ /skill-advisor --listing-audit --apply  (hook 스킬 description 최적화 — y/N 확인)` |
 
 ---
 
@@ -114,6 +121,7 @@ ARGUMENTS가 있으면 해당 모드에 맞는 헤더를 한 줄 출력한 뒤 �
 - H1-Y: `source_kind=yaml_frontmatter` — YAML frontmatter만 있는 수동 전용 스킬 (INFO)
 - M1: 동일 glob 문자열을 2개 이상 스킬이 선언 (문자열 완전 일치만 감지)
 - I1: description 비어있음
+- OPT-1: `trigger_block` + `file_path_globs>0` + `description>100자` — hook 스킬 description 단축 권장 (`"(hook)"` 최적화 후보)
 
 **검출 불가 (Phase 2 예정):**
 - fnmatch 기반 실제 경로 중첩 충돌 (예: `*.ts` vs `src/**/*.ts`)
@@ -216,10 +224,22 @@ for item in skills:
             issues.append({"severity": "info", "code": "H1-E",
                            "msg": "[이벤트 전용] tool_events 기반 트리거만 존재 — 파일 경로 기반 자동 로드 없음"})
 
-    # I1: description 비어있음
-    if not desc.strip():
+    # I1: description 비어있음 ("(hook)"은 valid placeholder — 제외)
+    if not desc.strip() and desc != "(hook)":
         issues.append({"severity": "info", "code": "I1",
                        "msg": "description 비어있음 — 색인 품질 저하"})
+
+    # OPT-1: trigger_block + file_path_globs>0 + description>100자 → "(hook)" 단축 권장
+    # opt-out: SKILL.md YAML에 hook_no_opt: true 플래그 시 억제
+    skill_meta = item  # item이 곧 meta dict
+    if (source_kind == "trigger_block"
+            and len(globs) > 0
+            and len(desc) > 100
+            and desc != "(hook)"
+            and not skill_meta.get("hook_no_opt", False)):
+        issues.append({"severity": "info", "code": "OPT-1",
+                       "msg": f"[listing 최적화] hook 스킬이지만 description {len(desc)}자 — "
+                              f"'(hook)' 단축 시 예산 절약. 억제: YAML에 hook_no_opt: true 추가"})
 
     results.append({
         "skill": skill_name,
@@ -286,7 +306,179 @@ severity 순 (critical → high → medium → info):
 | H1-M | info | 수동 전용 (utterance만 있고 globs=events=0) | skill-advisor 자신 포함 |
 | H1-Y | info | YAML frontmatter 수동 전용 (source_kind=yaml_frontmatter) | 커뮤니티 스킬 기본값 — /skill-creator로 trigger_conditions 추가 권장 |
 | M1 | medium | 동일 glob 문자열 중복 선언 | — |
-| I1 | info | description 비어있음 | — |
+| I1 | info | description 비어있음 | `"(hook)"` placeholder는 제외 |
+| OPT-1 | info | hook 스킬(trigger_block+globs) description > 100자 — `"(hook)"` 단축 권장 | YAML `hook_no_opt: true` 시 억제 |
+
+---
+
+## --listing-audit 모드
+
+`skillListingMaxDescChars`·`skillListingBudgetFraction` 설정 상태와 실제 스킬 description 분포를 진단하여 "N skill descriptions shortened" 문제를 사전 탐지하고 최적화 후보를 제안한다.
+
+### 배경 지식 (바이너리 검증)
+
+Claude Code의 스킬 목록 예산 공식 (v2.1.142 바이너리 확인):
+```
+char_budget = (contextTokens ?? 200_000) × 4 × skillListingBudgetFraction
+```
+- 기본값: `skillListingMaxDescChars=1536`, `skillListingBudgetFraction=0.01`
+- `"N descriptions shortened"`: description이 `skillListingMaxDescChars`를 초과 시 발생
+- `"N descriptions dropped"`: 총 description 합이 `char_budget`을 초과 시 발생 (더 심각)
+
+**hook 스킬 description 규약** (`"(hook)"` 패턴):
+- `trigger_block` + `file_path_globs > 0` 스킬은 파일 경로 기반으로 자동 트리거
+- 이런 스킬의 description은 시스템 목록에 불필요 → `"(hook)"` (6자) 사용 권장
+- **주의**: `description: ""` (빈 문자열)은 사용 금지 — Claude Code가 SKILL.md body 첫 줄을 description으로 fallback하여 `<!--trigger_conditions` 노출 버그 발생
+
+### 실행 단계
+
+**1단계 — settings.json 읽기**
+
+```python
+import json, os, math
+from pathlib import Path
+
+settings_path = Path(os.path.expanduser("~/.claude/settings.json"))
+settings = {}
+if settings_path.exists():
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+
+max_desc_chars = settings.get("skillListingMaxDescChars", 1536)
+budget_fraction = settings.get("skillListingBudgetFraction", 0.01)
+
+# char_budget 공식 (200K 고정 기준, × 4 multiplier)
+char_budget = 200_000 * 4 * budget_fraction
+```
+
+**2단계 — 스킬 인덱스 로드 + 분석**
+
+```python
+data = json.load(open("/tmp/skill-index.json"))
+skills = data.get("skills", data) if isinstance(data, dict) else data
+
+desc_map = [(s.get("skill","?"), s.get("description",""), s.get("source_kind",""),
+             s.get("file_path_globs",[]), s.get("skill_path",""),
+             s.get("hook_no_opt", False))
+            for s in skills]
+
+total_chars = sum(len(d) for _,d,*_ in desc_map)
+shortened_count = sum(1 for _,d,*_ in desc_map if len(d) > max_desc_chars)
+
+# OPT-1 후보: trigger_block + globs>0 + desc>100 + desc!="(hook)" + not hook_no_opt
+opt1_candidates = [
+    (name, len(desc), path)
+    for name, desc, src, globs, path, no_opt in desc_map
+    if src == "trigger_block" and len(globs) > 0
+    and len(desc) > 100 and desc != "(hook)" and not no_opt
+]
+
+# 예산 상태
+budget_used_pct = (total_chars / char_budget * 100) if char_budget > 0 else 999
+```
+
+**3단계 — 결과 출력**
+
+```
+▶ /skill-advisor --listing-audit  (skillListing 예산 진단)
+
+## skillListing 예산 진단 결과
+
+### 현재 설정
+| 항목 | 현재값 | 기본값 | 권장 범위 | 상태 |
+|------|--------|--------|-----------|------|
+| skillListingMaxDescChars | 2000 | 1536 | 1536~2000 | ✅ |
+| skillListingBudgetFraction | 0.05 | 0.01 | 0.03~0.05 | ✅ |
+| char_budget | 40,000자 | — | — | — |
+
+### description 분포
+| 항목 | 값 |
+|------|-----|
+| 전체 스킬 수 | 68개 |
+| 전체 description 합계 | 16,137자 |
+| 예산 사용률 | 40% (16,137 / 40,000자) |
+| shortened 예상 | 0개 (max_desc_chars=2000 기준) |
+| dropped 예상 | 없음 (예산 충분) |
+
+### OPT-1 최적화 후보 (hook 스킬 description 단축 권장)
+| 스킬 | description 길이 | 절약 가능 |
+|------|----------------|---------|
+| (없음) | — | — |
+
+✅ 현재 설정 최적 상태 — 조치 불필요
+
+---
+💡 적용하려면: /skill-advisor --listing-audit --apply
+```
+
+**4단계 — settings 권장값 제안 출력**
+
+```
+### settings.json 권장값 (참고용 — 적용은 /update-config 사용)
+{
+  "skillListingMaxDescChars": 2000,   // 현재: 2000 ✅ (변경 불필요)
+  "skillListingBudgetFraction": 0.05  // 현재: 0.05 ✅ (변경 불필요)
+}
+```
+
+> settings.json 직접 수정은 `/update-config` 스킬을 사용한다. skill-advisor는 제안만 출력.
+
+### --listing-audit --apply (OPT-1 후보 자동 수정)
+
+OPT-1 후보가 있을 때만 활성화. 없으면 "최적화 대상 없음" 출력 후 종료.
+
+```python
+# 후보 목록 표시 + y/N 확인
+print("다음 스킬의 description을 '(hook)'으로 수정합니다:")
+for name, dlen, path in opt1_candidates:
+    print(f"  {name}: {dlen}자 → '(hook)' (6자, {dlen-6}자 절약)")
+print("\n계속하시겠습니까? (y/N): ", end="")
+
+# 사용자 확인 후 원자적 수정 (write-temp → fsync → atomic rename)
+import shutil, tempfile
+for name, dlen, path in opt1_candidates:
+    skill_path = Path(path)
+    content = skill_path.read_text(encoding="utf-8")
+    # description 필드만 교체 (정규식으로 YAML frontmatter 내 description 라인만 수정)
+    import re
+    new_content = re.sub(
+        r'^(description:\s*)".{101,}"',
+        'description: "(hook)"',
+        content, flags=re.MULTILINE
+    )
+    # atomic write
+    tmp = skill_path.with_suffix(".tmp")
+    tmp.write_text(new_content, encoding="utf-8")
+    tmp.replace(skill_path)  # atomic rename (POSIX)
+    print(f"✅ {name}: description → '(hook)'")
+```
+
+**원자성 보장**: write-temp → replace (atomic rename) 패턴. 중간 실패 시 .tmp 파일만 남고 원본 유지.
+
+### --listing-audit --json
+
+JSON 형식 출력:
+
+```json
+{
+  "settings": {
+    "skillListingMaxDescChars": 2000,
+    "skillListingBudgetFraction": 0.05,
+    "char_budget": 40000
+  },
+  "stats": {
+    "total_skills": 68,
+    "total_desc_chars": 16137,
+    "budget_used_pct": 40.3,
+    "shortened_count": 0,
+    "dropped_count": 0
+  },
+  "opt1_candidates": [],
+  "settings_recommendations": {
+    "skillListingMaxDescChars": {"current": 2000, "recommended": 2000, "action": "ok"},
+    "skillListingBudgetFraction": {"current": 0.05, "recommended": 0.05, "action": "ok"}
+  }
+}
+```
 
 ---
 
@@ -517,6 +709,26 @@ python3 "$SKILL_DIR/update.py" [<skill>] --apply [--yes] [--keep-backup]
 
 **실행 전 계획 출력**: `--apply` 전 채널별 동작·부작용 등급을 항상 표로 출력한 후 `y/N` 확인. `--yes` 플래그 시 확인 생략 (CI 모드).
 
+### Post-apply 자동 listing-audit (기본 활성)
+
+`--apply` 완료 후 github_raw 채널에서 1개 이상 적용됐으면 **자동으로 `--listing-audit --apply`를 실행**한다.
+
+**이유**: 업스트림 업데이트는 로컬에서 `"(hook)"`으로 최적화한 description을 원래 값으로 복구할 수 있다. 자동 실행으로 OPT-1 후보를 즉시 재적용한다.
+
+```bash
+# --apply 완료 후 적용 수 확인
+APPLIED_COUNT=$(결과에서 "→ 적용됨" 라인 수)
+NO_LISTING_AUDIT_FLAG=false  # --no-listing-audit 플래그 여부
+
+if [ "$APPLIED_COUNT" -ge 1 ] && [ "$NO_LISTING_AUDIT_FLAG" = "false" ]; then
+  echo ""
+  echo "━━━ 자동 실행: --listing-audit --apply ━━━"
+  # --listing-audit --apply 모드 실행 (OPT-1 후보가 없으면 "최적화 대상 없음" 출력 후 종료)
+fi
+```
+
+**억제**: `--no-listing-audit` 플래그 명시 시 자동 실행 건너뜀.
+
 ### exit code contract
 
 | 코드 | 의미 |
@@ -559,3 +771,113 @@ python3 "$SKILL_DIR/update.py" [<skill>] --apply [--yes] [--keep-backup]
 - **Phase 1 M1 한계**: 동일 문자열 완전 일치만 감지. fnmatch 중첩 감지는 Phase 2.
 - **exit code**: 기존 도구 관례 준수 (0=성공, 1=이슈/경고, 2=실행 실패)
 - **OCP 허용**: file_path_globs=[] — 수동 호출 전용 도구
+- **OPT-1 opt-out 방식**: whitelist 대신 opt-out(hook_no_opt: true) 채택 — 새 hook 스킬 추가 시 자동 감지, 예외만 명시 (ChatGPT DA H-1 반영, 2026-05)
+- **"(hook)" placeholder 규약**: trigger_block + file_path_globs>0 스킬에 적용. `""` 사용 금지 (body fallback 버그). hook_no_opt: true로 억제 가능 (2026-05 세션 검증)
+- **--listing-audit 범위**: settings.json 읽기(진단) + SKILL.md 수정(--apply). settings.json 수정은 제안만 — 적용은 /update-config 위임 (DA H-1 SRP 반영)
+- **char_budget 공식**: 200K × 4 × fraction = 문자 예산 (바이너리 v2.1.142 검증, 2026-05)
+- **post-apply 자동 listing-audit**: `--update --apply` 완료 후 github_raw 1개+ 적용 시 `--listing-audit --apply` 자동 실행 (기본 ON). 억제: `--no-listing-audit` 플래그. 이유: 업스트림 업데이트가 로컬 "(hook)" 최적화를 덮어쓸 수 있음 (2026-05 실증)
+
+---
+
+## CSR #829 변경 (2026-05-24, P1 채택 — 6 보강 실증 완료)
+
+본 SKILL.md + scripts/session-review.py 첫 사용자 실증 (session 33cb50b0) 발견 6 문제 보강. CSR #784·#808·#809·#827·#828 G-13 carry-forward에서 발견.
+
+### 적용 변경
+1. **`--session-scan` alias 추가** (#2): 사용자 typo 보호 — `--session-review` 동일 효과. argparse `dest="session_scan_alias"`. SKILL.md 사용법 섹션 명시.
+2. **`--jsonl <path>` 절대 우선순위 보장** (#3): Track1 자동 detection skip 명시. stderr `[INFO] --jsonl 명시 사용` 가시성 로그.
+3. **Phase 1.5 가속** (#1): `~/.claude/hooks/skill-auto-loader.sh` 로드 로그 추가 → `~/.claude/da-tools/skill-load.jsonl` JSONL (3-SID schema 포함, CSR #831 통합).
+4. **UserPromptSubmit hook keyword detection** (#4): `~/.claude/hooks/skill-keyword-injector.sh` 신설 — csr-task utterance miss 회피 (paddo.dev Controllability Problem). Issue #38 opencode-skills 답습.
+5. **wrapper command 트리거** (#5): `~/.claude/hooks/guide-board-detector.sh` 신설 (PreToolUse:Bash) + `hard-gates.json` `tool_events_bash_if` schema 확장. Bash:matches 정규식 미지원 발견 → Plan #11 정정 (Permission rule syntax 와일드카드).
+6. **operator skip 자동 audit** (#6): `~/.claude/hooks/plan-skip-audit.sh` 신설 — plan 면제 키워드 + transcript edit count cross-check → `~/.claude/da-tools/plan-skip.jsonl` event `plan_skip_invalid|justified`.
+
+### 인터넷 학습 근거
+- [paddo.dev Controllability Problem](https://paddo.dev/blog/claude-skills-controllability-problem/) — utterance/wrapper miss 회피 근거
+- [Issue #38 opencode-skills](https://github.com/malhashemi/opencode-skills/issues/38) — UserPromptSubmit hook 강제 evaluation 패턴
+- [Anthropic Hooks reference](https://code.claude.com/docs/en/hooks) — `if: Bash(...)` Permission rule syntax 와일드카드 (Plan #11 정정 근거)
+
+### cross-ref
+- CSR #830: #4·#5·#6 직접 연계
+- CSR #831: #1 skill-load.jsonl 3-SID schema 통합 (Anthropic Issue #26964 대응)
+
+---
+
+## CSR #825 G3' 축소 변경 (2026-05-24, DA chain Tier 1 N → 옵션 B 채택)
+
+본 SKILL.md 및 `scripts/session-review.py` 의 G 통합 6 변경 중 3 변경만 채택 (A·E·F 축소). DA chain Tier 1 (4-AI 순차) 결과 N + 옵션 B (Layer 4 폐기) 적용.
+
+### A — Detection 4 status + schema_version: 2
+
+`build_hard_gate_candidates()` 출력 `detected` 필드를 4 string status 로 분리:
+
+| Status | 정의 | 기존 (v1) |
+|--------|------|----------|
+| `"executed"` | slash_command_found 매칭 (실행 evidence) | `true` |
+| `"triggered"` | triggered_by 비어있지 않음 (조건 매칭, 실행 미확인) | `false` (false negative) |
+| `"artifact_confirmed"` | gate-artifacts/.done 마커 확인 | `"artifact"` |
+| `"miss"` | 모든 조건 미매칭 | `false` |
+
+**Backward compat**: `legacy_detected` 필드 보존 (60일 deprecation, drop 2026-07-23). `schema_version: 2` 필드 신규.
+
+**핵심 회피**: CSR #823 본 세션 csr-task false negative 사례 (triggered_by 있는데 detected=false) — CSR #825 C-A1 해소.
+
+### E — unified_skill_view + thresholds.json 외부화
+
+`build_unified_skill_view()` 신규 함수 — Hard Gate + slash_command + file-glob + signal 통합 view.
+
+**Ordering rule**:
+1. Hard Gate (Tier A → B → C → D → ?)
+2. slash_command (Hard Gate 미포함)
+3. file-glob (skill_candidates)
+4. signal_recommendations
+
+**Top-N cap**: 기본 10 (CW-HIGH-2 visual complexity 회피).
+
+**Thresholds 외부화**: `~/.claude/skill-advisor/thresholds.json` — signal_thresholds (large_change / refactor / tdd / da_chain) + default_mode: conservative.
+
+User override: `--threshold-config <path>` flag.
+
+### F (축소) — DA chain Tier 분리 + Composition reference
+
+본 SKILL.md 변경 시 DA chain Tier 분리:
+
+| 분류 | 기준 | DA chain Tier |
+|------|------|:-------------:|
+| **major** | frontmatter 변경 / ★ Hard Gate line 추가/삭제/수정 / tool 목록 변경 / trigger pattern 변경 | **Tier 1** (4-AI 순차) 의무 |
+| **minor** | 본문 prose only / typo / formatting / CHANGELOG entry 추가 | **Tier 3 skip** (Claude 단독) |
+
+**Semantic prose evasion warning** (DS-HIGH-3 carry-forward): 본문 prose 가 implicit trigger pattern 추가 시 minor 분류 위험 — reviewer 수동 격상 (Tier 2+) 권장.
+
+**Composition reference (frontmatter metadata)**: CLAUDE.md anchor 회피 (CW-MED-3) — Composition 규칙 reference 는 SKILL.md frontmatter 또는 별도 metadata 박제. CLAUDE.md 직접 anchor 사용 금지.
+
+### REJECT 4건 (삭제됨)
+
+DA chain 결과 본 변경에서 제외된 항목:
+
+| 안 | REJECT 이유 | 별건 carry-forward |
+|----|-----------|-------------------|
+| **B Phase 1.5 load log** | r2 ChatGPT — hook side effect catastrophic risk (skill-auto-loader.sh 변경) | `--analyze-recent-jsonl` subcommand 별건 (read-only post-hoc) |
+| **C read-only redefine** | r2 ChatGPT — semantic drift, 기존 사용자 mental model 침해 | 본 원칙 유지 (트리거 immutable 의미) |
+| **D Tool path validation** | r2 ChatGPT — scope creep (god-object risk) | `~/.claude/scripts/validate-skill-tools.sh` 별도 도구 |
+| **Layer 4 skill-creator hard-block** | **r4 DeepSeek CRIT-1·2 — frontmatter flag self-referential guard violation** ("guard inside the guarded system") | External integrity store (별건 CSR — signed manifest 또는 OS permission 보호) |
+
+**보호 mechanism (CSR #823 답습 procedural enforcement)**:
+- Layer 1: 사용자 명시 검토 (Tier S, CSR #716 옵션 D) — 본 CSR #825 진행 시 적용
+- Layer 2: DA chain Tier 1 통과 (현재 적용 완료)
+- Layer 3: 본 변경 후 첫 `--session-review` self-application 사용자 검토 — 변경 후 의무
+
+**삭제 (DA chain 결과)**: self-reference guard frontmatter flag · 4-layer hard enforcement · skill-creator hard-block · `skill_name == "skill-advisor"` 하드코드.
+
+### 회귀 fixture (`tests/`)
+
+- `fixture-A-detection-3-status.json` — 4 status 검증
+- `fixture-E-unified-view.json` — ordering + top-10 cap
+- `fixture-F-tier-classification.json` — major/minor 명시 기준
+
+자동 검증: `bash tests/g-integrated-test.sh` (13/13 PASS Green)
+
+## 변경 이력 (CHANGELOG)
+
+| 일자 | 변경 |
+|------|------|
+| **2026-05-24** | **CSR #825 G3' 축소 — DA chain Tier 1 Conditional Y (옵션 B 채택)**. detection 4 status (executed/triggered/artifact_confirmed/miss) + schema_version: 2 + legacy_detected 60일 deprecation (drop 2026-07-23). unified_skill_view 신규 (ordering + top-10 cap). thresholds.json 외부화 (signal_thresholds + conservative mode). major/minor Tier 분리 명시 기준. **REJECT 4건**: B Phase 1.5 load log (hook side effect) / C read-only redefine (semantic drift) / D tool path validation (scope creep) / **Layer 4 skill-creator hard-block (DeepSeek r4 self-referential guard violation)**. **삭제**: self-reference guard frontmatter flag · 4-layer hard enforcement. 보호 mechanism = CSR #823 답습 procedural (사용자 검토 + DA chain + first self-application 검토). 신규 도구: `tests/g-integrated-test.sh` (13/13 PASS Green). 별건 carry-forward 6건 (External integrity store / DS-HIGH-1·2·3 / `--analyze-recent-jsonl` / `validate-skill-tools.sh`). claude_learn 3 글 박제 (self-referential guard violation / Monotonic MODIFY meta-pattern / Procedural vs Hard enforcement). DA session: `/tmp/da-chain-csr825-1779578551/` |

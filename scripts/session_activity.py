@@ -13,7 +13,9 @@ from pathlib import Path
 try:
     from constants import SKILL_INDEX
 except ImportError:
-    SKILL_INDEX = Path("/tmp/skill-index.json")
+    # CSR #832 fallback (constants.py 미import 환경)
+    _primary = Path.home() / ".claude" / "da-tools" / "skill-index.json"
+    SKILL_INDEX = _primary if _primary.exists() else Path("/tmp/skill-index.json")
 
 # 라인 시작 또는 공백 뒤에 등장하는 슬래시 커맨드만 매칭 (경로 오탐 방지)
 _SLASH_RE = re.compile(r"(?:^|\s)/[\w][\w-]*", re.MULTILINE)

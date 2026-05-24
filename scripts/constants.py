@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Base directories
-SKILL_INDEX = Path("/tmp/skill-index.json")
+# Base directories (CSR #832 — /tmp 휘발성 회피)
+# primary 영속 위치 우선 + /tmp legacy fallback (backward compat)
+_SKILL_INDEX_PRIMARY = Path.home() / ".claude" / "da-tools" / "skill-index.json"
+_SKILL_INDEX_LEGACY = Path("/tmp/skill-index.json")
+SKILL_INDEX = _SKILL_INDEX_PRIMARY if _SKILL_INDEX_PRIMARY.exists() else _SKILL_INDEX_LEGACY
 PROJECTS_BASE = Path.home() / ".claude" / "projects"
 SCRIPTS_DIR = Path(__file__).parent
 DATA_DIR = SCRIPTS_DIR.parent / "data"
