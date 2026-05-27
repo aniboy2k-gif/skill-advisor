@@ -1,0 +1,71 @@
+{
+  "fixture_id": "E",
+  "name": "unified-skill-view",
+  "description": "CSR #825 Plan v4 Phase 3 — unified_skill_view 신규 (slash_command + file-glob + signal + hard_gate 통합) + ordering rule + top-10 cap + thresholds.json 외부화",
+  "ordering_rule": [
+    "1. Hard Gate (Tier A/B/C)",
+    "2. slash_command 매칭",
+    "3. file-glob 매칭",
+    "4. signal_recommendations"
+  ],
+  "top_n_cap": 10,
+  "test_cases": [
+    {
+      "case_id": "E-1",
+      "name": "본 세션 CSR #823 같은 큰 변경 — unified view 다수 항목",
+      "input": {
+        "hard_gate_candidates": [
+          {"skill": "verification-before-completion", "detected": "artifact_confirmed"},
+          {"skill": "handoff-verify", "detected": "artifact_confirmed"},
+          {"skill": "plan", "detected": "executed"},
+          {"skill": "trader-task", "detected": "executed"}
+        ],
+        "slash_commands_found": ["/trader-task", "/da-chain", "/plan", "/skill-advisor"],
+        "skill_candidates_file_glob": [
+          {"skill": "skill-creator", "matched_pattern": ".claude/skills/**"}
+        ],
+        "signal_recommendations": []
+      },
+      "expected_unified_view": [
+        {"rank": 1, "skill": "verification-before-completion", "source": "hard_gate", "status": "artifact_confirmed"},
+        {"rank": 2, "skill": "handoff-verify", "source": "hard_gate", "status": "artifact_confirmed"},
+        {"rank": 3, "skill": "plan", "source": "hard_gate", "status": "executed"},
+        {"rank": 4, "skill": "trader-task", "source": "hard_gate", "status": "executed"},
+        {"rank": 5, "skill": "da-chain", "source": "slash_command"},
+        {"rank": 6, "skill": "skill-advisor", "source": "slash_command"},
+        {"rank": 7, "skill": "skill-creator", "source": "file_glob"}
+      ]
+    },
+    {
+      "case_id": "E-2",
+      "name": "Top-10 cap 적용 (15+ 매칭 시 제한)",
+      "input": {
+        "total_candidates": 15,
+        "ordering": "Hard Gate first"
+      },
+      "expected_output_length": 10,
+      "expected_truncation_note": "Total 15 candidates, showing top 10"
+    }
+  ],
+  "thresholds_external": {
+    "path": "~/.claude/skill-advisor/thresholds.json",
+    "default_content": {
+      "signal_thresholds": {
+        "large_change": {
+          "min_loc": 200,
+          "min_files": 3,
+          "min_cross_cutting_touch_points": 2,
+          "_dimensions": ["loc", "file_count", "cross_cutting"]
+        },
+        "refactor": {
+          "rename_count_threshold": 5,
+          "min_files": 2
+        }
+      },
+      "default_mode": "conservative",
+      "_conservative_semantics": "all dimensions must exceed thresholds simultaneously (AND logic)"
+    },
+    "override_flag": "--threshold-config <path>",
+    "integrity_protection": "별건 carry-forward — DS-HIGH-1 (CSR future)"
+  }
+}

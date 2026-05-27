@@ -38,6 +38,24 @@
       "trigger_pattern": "서브에이전트 작업 완료 검증 시",
       "trigger_pattern_en": "sub-agent task completion verification",
       "session_signals": ["subagent", "sub-agent", "agent completed", "서브에이전트"]
+    },
+    {
+      "skill": "trader-task",
+      "trigger_pattern": "trader_log #N 처리·ARIA/KRIS 작업·관련 코드 변경 시",
+      "trigger_pattern_en": "trader-log work, ARIA/KRIS task, related code change",
+      "session_signals": ["trader-log", "ARIA", "KRIS", "/trader-task", "trader_log #"]
+    },
+    {
+      "skill": "csr-task",
+      "trigger_pattern": "CSR #N 처리·CSR 보드 작업·AI 게시판 인프라/스킬/메모리/DA/hook/룰 변경 시",
+      "trigger_pattern_en": "CSR work, AI bulletin board infra/skill/memory/DA/hook/rule",
+      "session_signals": ["CSR", "csr-task", "/csr-task", "AI 게시판"]
+    },
+    {
+      "skill": "guide-comment-rule",
+      "trigger_pattern": "가이드 게시판 본문/댓글 편집 시 R1 (4500cp) + R2 (댓글=changelog) 정책 인지",
+      "trigger_pattern_en": "Guide board body/comment edit — R1 (4500cp) + R2 (comment=changelog) policy",
+      "session_signals": ["4500", "force-comment", "guide-log", "가이드 본문", "댓글 변경 이력", "claude_docs", "bb_guide", "trader_guide", "qms_guide"]
     }
   ]
 }

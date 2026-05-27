@@ -22,6 +22,41 @@ from channels import github_raw, npm, pip as pip_channel
 
 SOURCES_PATH = Path.home() / ".claude" / "skill-sources.json"
 SKILL_INDEX_PATH = Path("/tmp/skill-index.json")
+SKILL_INDEX_SH = Path.home() / ".claude/hooks/skill-index.sh"
+
+
+def ensure_skill_index() -> bool:
+    """skill-index.json이 없으면 skill-index.sh를 자동 실행해 재생성한다.
+
+    Stop 훅이 /tmp/skill-index.json을 세션 종료마다 삭제하기 때문에,
+    update.py 실행 시점에 파일이 없으면 resolve_local_path가 전부 실패한다.
+    이를 방지하기 위해 파일 부재 시 자동 복구한다.
+
+    Returns:
+        True  = 파일이 있음 (기존 또는 재생성 성공)
+        False = 재생성 실패 (skill-index.sh 없거나 실행 오류)
+    """
+    if SKILL_INDEX_PATH.exists():
+        return True
+
+    if not SKILL_INDEX_SH.exists():
+        print(f"⚠ skill-index.sh 없음: {SKILL_INDEX_SH}", file=sys.stderr)
+        return False
+
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["zsh", str(SKILL_INDEX_SH)],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and SKILL_INDEX_PATH.exists():
+            return True
+        print("⚠ skill-index.sh 실행 실패 — local_path 조회가 제한됩니다.", file=sys.stderr)
+        return False
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"⚠ skill-index.sh 실행 오류: {e} — local_path 조회가 제한됩니다.", file=sys.stderr)
+        return False
 
 CHANNEL_HANDLERS = {
     "anthropic_official": github_raw,
@@ -262,6 +297,7 @@ def main() -> int:
         print(f"  현재 경로: {SOURCES_PATH}")
         return 0
 
+    ensure_skill_index()
     sources = load_sources()
     results = run_check(args.skill, sources)
 

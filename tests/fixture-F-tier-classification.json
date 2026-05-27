@@ -1,0 +1,71 @@
+{
+  "fixture_id": "F",
+  "name": "skill-advisor-tier-classification",
+  "description": "CSR #825 Plan v4 Phase 4 — SKILL.md 변경 시 DA chain Tier 분리 (major/minor 명시 기준)",
+  "classification_criteria": {
+    "major": {
+      "description": "DA chain Tier 1 (4-AI 순차) 의무",
+      "examples": [
+        "frontmatter 변경 (name·description·source·self_modification_protected 등)",
+        "★ Hard Gate 관련 line 추가/삭제/수정",
+        "tool 목록 변경 (allowed-tools 등)",
+        "trigger_conditions 변경 (utterance_patterns / file_path_globs / tool_events)"
+      ]
+    },
+    "minor": {
+      "description": "Tier 3 skip (Claude 단독)",
+      "examples": [
+        "본문 prose only (description 외 markdown 본문)",
+        "typo 수정",
+        "formatting (whitespace·indentation)",
+        "CHANGELOG entry 추가"
+      ]
+    }
+  },
+  "test_cases": [
+    {
+      "case_id": "F-1",
+      "name": "frontmatter 변경 → major",
+      "diff_summary": "description 필드 수정",
+      "expected_tier": "major",
+      "expected_da_chain": "Tier 1 의무"
+    },
+    {
+      "case_id": "F-2",
+      "name": "본문 typo 수정 → minor",
+      "diff_summary": "1 word typo fix in prose section",
+      "expected_tier": "minor",
+      "expected_da_chain": "Tier 3 skip 가능"
+    },
+    {
+      "case_id": "F-3",
+      "name": "★ Hard Gate line 추가 → major",
+      "diff_summary": "'코드·기능 구현 완료 선언 전' Hard Gate 추가",
+      "expected_tier": "major",
+      "expected_da_chain": "Tier 1 의무"
+    },
+    {
+      "case_id": "F-4",
+      "name": "trigger_conditions utterance 추가 → major",
+      "diff_summary": "trigger_conditions ko utterance 1건 추가",
+      "expected_tier": "major",
+      "expected_da_chain": "Tier 1 의무"
+    },
+    {
+      "case_id": "F-5",
+      "name": "CHANGELOG entry 추가 → minor",
+      "diff_summary": "변경 이력 1줄 추가",
+      "expected_tier": "minor",
+      "expected_da_chain": "Tier 3 skip 가능"
+    }
+  ],
+  "deepseek_warning": {
+    "DS-HIGH-3": "Semantic prose changes can evade major/minor classification — 본문 prose 가 implicit trigger pattern 추가 시 minor 분류 위험",
+    "carry_forward": "별건 — 자동 semantic detection 도구 별도 등록 (LOW)",
+    "manual_safeguard": "본 fixture는 명시 syntactic 기준만 cover. semantic implicit 변경은 reviewer 수동 격상 (Tier 2+) 권장."
+  },
+  "composition_reference": {
+    "skill_advisor_specific": "본 SKILL.md 변경 시 본 fixture 기준 자동 분류 + DA chain Tier 결정",
+    "CLAUDE.md_anchor_avoided": "CW-MED-3 — anchor brittleness 회피, frontmatter metadata 박제로 대체"
+  }
+}

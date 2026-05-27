@@ -1,0 +1,85 @@
+{
+  "fixture_id": "A",
+  "name": "detection-3-status",
+  "description": "CSR #825 Plan v4 Phase 2 — detection 4 status (executed/triggered/artifact_confirmed/miss) + schema_version: 2 + backward compat (기존 detected 보존 60일 deprecation)",
+  "test_cases": [
+    {
+      "case_id": "A-1",
+      "name": "slash_command 매칭 → executed",
+      "input": {
+        "skill_name": "trader-task",
+        "trigger_pattern": "trader_log #N",
+        "triggered_by": [],
+        "slash_command_found": "/trader-task"
+      },
+      "expected_v1": {"detected": true, "detection_basis": "slash_command_found"},
+      "expected_v2": {
+        "detected": "executed",
+        "detection_basis": "slash_command_found",
+        "schema_version": 2,
+        "legacy_detected": true
+      }
+    },
+    {
+      "case_id": "A-2",
+      "name": "file/keyword 매칭 (triggered_by) → triggered",
+      "input": {
+        "skill_name": "csr-task",
+        "trigger_pattern": "CSR #N",
+        "triggered_by": ["file:anti-patterns.md"],
+        "slash_command_found": null
+      },
+      "expected_v1": {"detected": false, "detection_basis": "JSONL keyword match [ESTIMATED]"},
+      "expected_v2": {
+        "detected": "triggered",
+        "detection_basis": "JSONL keyword match [ESTIMATED]",
+        "schema_version": 2,
+        "legacy_detected": false
+      },
+      "regression_reference": "본 세션 CSR #823 작업 시 csr-task 측 false negative 사례"
+    },
+    {
+      "case_id": "A-3",
+      "name": "gate-artifact .done 마커 → artifact_confirmed",
+      "input": {
+        "skill_name": "verification-before-completion",
+        "trigger_pattern": "★ 완료 선언 전",
+        "triggered_by": [],
+        "slash_command_found": null,
+        "gate_artifact_exists": true
+      },
+      "expected_v1": {"detected": "artifact", "detection_basis": "gate-artifact .done 마커 확인"},
+      "expected_v2": {
+        "detected": "artifact_confirmed",
+        "detection_basis": "gate-artifact .done 마커 확인",
+        "schema_version": 2,
+        "legacy_detected": "artifact"
+      }
+    },
+    {
+      "case_id": "A-4",
+      "name": "어느 조건도 매칭 안 됨 → miss",
+      "input": {
+        "skill_name": "vercel-react-best-practices",
+        "trigger_pattern": "React 컴포넌트",
+        "triggered_by": [],
+        "slash_command_found": null,
+        "gate_artifact_exists": false
+      },
+      "expected_v1": {"detected": false, "detection_basis": "JSONL keyword match [ESTIMATED]"},
+      "expected_v2": {
+        "detected": "miss",
+        "detection_basis": "JSONL keyword match [ESTIMATED]",
+        "schema_version": 2,
+        "legacy_detected": false
+      }
+    }
+  ],
+  "schema_version_policy": {
+    "current": 2,
+    "deprecation_window_days": 60,
+    "backward_compat": "v1 reader receives v2 output → falls back to legacy_detected field",
+    "migration_path": "v1 'detected' (boolean | 'artifact') → v2 'detected' (4 string status) + 'legacy_detected' 보존",
+    "drop_legacy_after": "2026-07-23 (60일 후)"
+  }
+}

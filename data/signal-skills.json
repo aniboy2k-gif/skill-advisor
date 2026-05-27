@@ -1,7 +1,12 @@
 {
-  "schema_version": "1.0",
-  "generated_at": "2026-04-23",
-  "description": "Error/correction signal → skill recommendation mapping. Independently implemented (inspired by accidentalrebel/claude-skill-session-retrospective concept).",
+  "schema_version": "1.1",
+  "generated_at": "2026-05-23",
+  "description": "Error/correction signal → skill recommendation mapping. v1.1: domain_globs context matching + auto-derived confidence by evidence_count (<3 low / 3-4 medium / ≥5 high). Independently implemented (inspired by accidentalrebel/claude-skill-session-retrospective concept).",
+  "confidence_thresholds": {
+    "low": 0,
+    "medium": 3,
+    "high": 5
+  },
   "mappings": [
     {
       "id": "test-failure",
@@ -9,8 +14,8 @@
         "error_keywords": ["AssertionError", "test failed", "FAILED", "pytest", "assertion failed", "Expected", "assert"],
         "min_count": 1
       },
+      "domain_globs": [],
       "skill": "systematic-debugging",
-      "confidence": "high",
       "evidence_label": "test failure pattern"
     },
     {
@@ -19,8 +24,8 @@
         "error_keywords": ["TypeError", "SyntaxError", "ImportError", "ModuleNotFoundError", "NameError", "AttributeError", "build failed", "compilation error", "cannot find"],
         "min_count": 1
       },
+      "domain_globs": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.py", "**/package.json", "**/tsconfig.json", "**/pyproject.toml"],
       "skill": "build-fix",
-      "confidence": "high",
       "evidence_label": "build/type error pattern"
     },
     {
@@ -29,8 +34,8 @@
         "error_keywords": ["PermissionError", "Permission denied", "EACCES", "EPERM"],
         "min_count": 1
       },
+      "domain_globs": [],
       "skill": "systematic-debugging",
-      "confidence": "medium",
       "evidence_label": "permission error pattern"
     },
     {
@@ -38,8 +43,8 @@
       "triggers": {
         "correction_count_min": 3
       },
+      "domain_globs": [],
       "skill": "plan",
-      "confidence": "medium",
       "evidence_label": "repeated user corrections (3+)"
     },
     {
@@ -48,8 +53,8 @@
         "error_keywords": ["FileNotFoundError", "No such file or directory", "ENOENT", "not found"],
         "min_count": 2
       },
+      "domain_globs": [],
       "skill": "systematic-debugging",
-      "confidence": "medium",
       "evidence_label": "file not found pattern"
     },
     {
@@ -58,8 +63,8 @@
         "error_keywords": ["Unauthorized", "Forbidden", "401", "403", "authentication", "permission denied"],
         "min_count": 1
       },
+      "domain_globs": ["**/auth*", "**/security*", "**/middleware*", "**/guards/**", "**/permissions*"],
       "skill": "security-pipeline",
-      "confidence": "medium",
       "evidence_label": "security/auth error pattern"
     }
   ]
