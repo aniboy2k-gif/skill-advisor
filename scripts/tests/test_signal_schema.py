@@ -25,7 +25,8 @@ def test_schema_file_exists():
 def test_schema_version_present():
     schema = _load_schema()
     assert "schema_version" in schema, "schema_version field missing"
-    assert schema["schema_version"] == "1.0", f"expected version 1.0, got: {schema['schema_version']}"
+    # CSR #970: v1.1 — domain_globs 컨텍스트 매칭 + confidence_thresholds 파생 모델
+    assert schema["schema_version"] == "1.1", f"expected version 1.1, got: {schema['schema_version']}"
 
 
 def test_mappings_present():
@@ -37,19 +38,32 @@ def test_mappings_present():
 
 def test_each_mapping_has_required_fields():
     schema = _load_schema()
-    required = {"id", "triggers", "skill", "confidence", "evidence_label"}
+    # CSR #970: v1.1 — per-mapping confidence 제거(confidence_thresholds로 파생).
+    # domain_globs 는 선택(빈 배열/부재 시 컨텍스트 체크 skip — signal_to_skill.py).
+    required = {"id", "triggers", "skill", "evidence_label"}
     for i, m in enumerate(schema["mappings"]):
         missing = required - set(m.keys())
         assert not missing, f"mappings[{i}] missing fields: {missing}"
 
 
-def test_mapping_confidence_values():
+def test_confidence_thresholds_valid():
+    """CSR #970 v1.1: confidence 는 confidence_thresholds(evidence_count 기반)로 파생."""
     schema = _load_schema()
-    valid = {"high", "medium", "low"}
+    th = schema.get("confidence_thresholds")
+    assert isinstance(th, dict), "confidence_thresholds dict 누락 (v1.1)"
+    assert "high" in th and "medium" in th, f"high/medium 임계 누락: {th}"
+    assert isinstance(th["high"], int) and isinstance(th["medium"], int), "임계는 정수여야 함"
+    assert th["high"] >= th["medium"], f"high({th['high']}) >= medium({th['medium']}) 위배"
+
+
+def test_domain_globs_is_list_when_present():
+    """CSR #970 v1.1: domain_globs 존재 시 list 여야 함(컨텍스트 매칭용)."""
+    schema = _load_schema()
     for i, m in enumerate(schema["mappings"]):
-        assert m["confidence"] in valid, (
-            f"mappings[{i}].invalid confidence value: {m['confidence']!r} (allowed: {valid})"
-        )
+        if "domain_globs" in m:
+            assert isinstance(m["domain_globs"], list), (
+                f"mappings[{i}].domain_globs must be a list"
+            )
 
 
 def test_mapping_ids_unique():

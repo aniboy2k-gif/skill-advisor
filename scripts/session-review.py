@@ -758,6 +758,13 @@ def main() -> int:
             _jsonl_source = "session_id_direct"
             print(f"[INFO] session_id-direct 해석: {jsonl.name} (CSR #965)", file=sys.stderr)
         elif retro_jsonl_path:
+            # Track1 (get-session.sh) legacy fallback. session_id-direct(위) 가
+            # 동일 결과를 subprocess/tempfile 없이 더 직접적으로 산출하므로 Track1 은
+            # 점진 폐기 대상.
+            # 폐기 기준 (CSR #970 항목 B): 다음 둘 다 충족 시 Track1 제거 + is_retro_available
+            #   호출 자체 제거 검토 — (1) session_id-direct 해석률(_jsonl_source=session_id_direct)
+            #   누적 ≥ 95% (csr-task-skill-audit 등 로그 기반 N주 관측), (2) get-session.sh 미설치
+            #   환경에서도 CLAUDE_CODE_SESSION_ID 가용성 확인. 그 전까지는 fallback 유지.
             jsonl = Path(retro_jsonl_path)
             _jsonl_source = "track1"
         else:
