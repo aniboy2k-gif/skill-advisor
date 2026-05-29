@@ -21,6 +21,7 @@ sys.modules["session_review"] = _mod
 build_candidates = _mod.build_candidates
 build_proposals = _mod.build_proposals
 find_jsonl = _mod.find_jsonl
+find_jsonl_by_session_id = _mod.find_jsonl_by_session_id
 print_json = _mod.print_json
 
 
@@ -88,22 +89,56 @@ def test_build_proposals_extensionless_file():
     )
 
 
-# ── M-1 fix: EOFError in --confirm ───────────────────────────────────────────
+# ── CSR #965: find_jsonl fail-closed on ambiguity ────────────────────────────
 
-def test_find_jsonl_eoferror_returns_first_candidate(tmp_path):
-    """M-1: input()이 EOFError를 던져도 크래시 없이 첫 번째 파일을 반환한다."""
-    f1 = tmp_path / "a.jsonl"
-    f1.write_text("{}")
-    f2 = tmp_path / "b.jsonl"
-    f2.write_text("{}")
+def _make_projects(tmp_path, monkeypatch, n_files):
+    """tmp PROJECTS_BASE/<cwd_hash>/ 에 n개 jsonl 생성하고 cwd_hash 반환."""
+    import os
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    projects = tmp_path / "projects"
+    cwd_hash = str(Path(os.getcwd()).resolve()).replace("/", "-")
+    proj_dir = projects / cwd_hash
+    proj_dir.mkdir(parents=True)
+    sids = []
+    for i in range(n_files):
+        sid = f"0000000{i}-aaaa-bbbb-cccc-dddddddddddd"
+        (proj_dir / f"{sid}.jsonl").write_text("{}")
+        sids.append(sid)
+    monkeypatch.setattr(_mod, "PROJECTS_BASE", projects)
+    return cwd_hash, sids
 
-    with (
-        patch.object(_mod, "PROJECTS_BASE", tmp_path),
-        patch("builtins.input", side_effect=EOFError),
-    ):
+
+def test_find_jsonl_failclosed_on_ambiguity(tmp_path, monkeypatch):
+    """CSR #965: 비대화형 + 후보 ≥2 → silent 추측 금지, None 반환 (cross-session 차단)."""
+    _make_projects(tmp_path, monkeypatch, 2)
+    with patch("builtins.input", side_effect=EOFError):
         result = find_jsonl(confirm=True)
+    assert result is None, "비대화형 다중 후보는 fail-closed(None)이어야 함"
+    # confirm=False (비대화형 기본) 도 동일
+    assert find_jsonl(confirm=False) is None
 
-    assert result is not None, "Should return a path even on EOFError"
+
+def test_find_jsonl_single_candidate_no_regression(tmp_path, monkeypatch):
+    """CSR #965: 단일 후보는 그대로 사용 (정상 단일 세션 무회귀)."""
+    _, sids = _make_projects(tmp_path, monkeypatch, 1)
+    result = find_jsonl(confirm=False)
+    assert result is not None and result.name == f"{sids[0]}.jsonl"
+
+
+def test_find_jsonl_by_session_id_exact(tmp_path, monkeypatch):
+    """CSR #965: session_id-direct 는 cwd_hash scope 내 정확한 파일을 해석한다."""
+    _, sids = _make_projects(tmp_path, monkeypatch, 2)
+    result = find_jsonl_by_session_id(sids[1])
+    assert result is not None and result.name == f"{sids[1]}.jsonl"
+
+
+def test_find_jsonl_by_session_id_absent_returns_none(tmp_path, monkeypatch):
+    """CSR #965: 해당 session_id 파일 부재 시 None (caller 폴백). None 입력도 None."""
+    _make_projects(tmp_path, monkeypatch, 1)
+    assert find_jsonl_by_session_id("ffffffff-0000-0000-0000-000000000000") is None
+    assert find_jsonl_by_session_id(None) is None
 
 
 # ── D-H1 fix: _full_path not in JSON output ──────────────────────────────────
@@ -147,17 +182,15 @@ def test_jsonl_path_outside_projects_base_rejected(tmp_path, capsys):
     assert "ERROR" in result.stderr, "Expected [ERROR] in stderr"
 
 
-def test_track2_when_no_session_id():
-    """session_id 소스(hook stdin JSON 1순위 / env var 2순위) 모두 없으면 (False, None) 반환."""
-    import os
-    env_backup = os.environ.pop("CLAUDE_SESSION_ID", None)
-    try:
-        available, path = _mod.is_retro_available()
-        assert not available, "session_id 없을 때 Track 1이면 안 됨"
-        assert path is None
-    finally:
-        if env_backup is not None:
-            os.environ["CLAUDE_SESSION_ID"] = env_backup
+def test_track2_when_no_session_id(monkeypatch):
+    """session_id 소스(hook stdin / CLAUDE_CODE_SESSION_ID / .session-hint) 모두 없으면 (False, None)."""
+    import lib.session_id as _sid
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.setattr(_sid, "_read_session_hint", lambda: None)
+    available, path = _mod.is_retro_available()
+    assert not available, "session_id 없을 때 Track 1이면 안 됨"
+    assert path is None
 
 
 def test_hard_gate_candidates_in_json_output(tmp_path, capsys):
@@ -259,6 +292,49 @@ def test_tier_coverage_summary_basic():
     assert summary["B"]["detected"] == 0
     assert summary["C"]["total"] == 1
     assert summary["C"]["detected"] == 1  # plan detected=True
+
+
+def test_tier_coverage_4status_v2(tmp_path):
+    """CSR #965: v2 4-status 입력을 executed/signal_only/artifact/miss 로 구분 집계.
+
+    이전 버그: 'if detected_val:' 가 "miss" 포함 모든 문자열을 detected 로 오집계.
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from session_review import build_tier_coverage_summary  # type: ignore
+
+    candidates = [
+        {"skill": "s-exec", "tier": "C", "detected": "executed", "triggered_by": []},
+        {"skill": "s-trig", "tier": "C", "detected": "triggered", "triggered_by": ["file:x"]},
+        {"skill": "s-arti", "tier": "C", "detected": "artifact_confirmed", "triggered_by": []},
+        {"skill": "s-miss", "tier": "C", "detected": "miss", "triggered_by": []},
+    ]
+    s = build_tier_coverage_summary(candidates)["C"]
+    assert s["total"] == 4
+    assert s["executed"] == 1
+    assert s["signal_only"] == 1
+    assert s["artifact"] == 1
+    assert s["miss"] == 0 + 1  # 'miss' 1건
+    # detected(=confirmed, back-compat) = executed + artifact, "miss"/"triggered" 미포함
+    assert s["detected"] == 2
+    # skills 엔트리는 status 필드 보유
+    assert {e["status"] for e in s["skills"]} == {"executed", "triggered", "artifact_confirmed", "miss"}
+
+
+def test_tier_coverage_text_breakdown(tmp_path, capsys):
+    """CSR #965: Tier Coverage 출력이 '합산 detected' 대신 4-status breakdown 표기."""
+    f = tmp_path / "s.jsonl"
+    f.write_text("{}")
+    stats = {"total_lines": 1, "tool_uses": 0, "edits_found": 0, "parse_errors": 0}
+    hgc = [
+        {"skill": "plan", "tier": "C", "detected": "executed", "triggered_by": []},
+        {"skill": "csr-task", "tier": "C", "detected": "triggered", "triggered_by": ["file:y"]},
+    ]
+    _mod.print_report(f, stats, {}, [], hard_gate_candidates=hgc, slash_commands=["/plan"])
+    out = capsys.readouterr().out
+    assert "executed 1" in out and "signal-only 1" in out, out
+    assert "plan✅" in out and "csr-task⚠" in out, out
+    # 합산 'N/M detected' 형식 제거 확인
+    assert "/2 detected" not in out
 
 
 def test_load_ssot_tier_map_fallback(tmp_path, monkeypatch):

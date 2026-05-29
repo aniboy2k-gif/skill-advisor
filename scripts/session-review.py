@@ -95,7 +95,30 @@ def is_retro_available(skills_dir: Path | None = None) -> tuple[bool, str | None
         return False, None
 
 
+def find_jsonl_by_session_id(session_id: str | None) -> Path | None:
+    """session_id 로 JSONL 을 cwd_hash scope 내에서 직접 해석 (CSR #965 PRIMARY).
+
+    Claude Code 는 세션 transcript 를 PROJECTS_BASE/<cwd_hash>/<session_id>.jsonl
+    (UUID 명명) 으로 저장한다. (cwd_hash, session_id) 튜플은 PROJECTS_BASE 내에서
+    유일하다고 가정 — 이 불변량 덕에 global 검색 없이 직접 경로 해석이 가능하다.
+    cwd_hash scope 를 벗어난 global rglob 은 하지 않는다 (다른 cwd 세션 오선택 차단).
+
+    Returns:
+        해당 파일 Path (존재 시) 또는 None (부재 시 — caller 가 다음 우선순위로 폴백).
+    """
+    if not session_id:
+        return None
+    cwd_hash = str(Path(os.getcwd()).resolve()).replace("/", "-")
+    candidate = PROJECTS_BASE / cwd_hash / f"{session_id}.jsonl"
+    return candidate if candidate.exists() else None
+
+
 def find_jsonl(confirm: bool = False) -> Path | None:
+    """cwd_hash scope 내 JSONL 후보 해석 — session_id 미가용 시 last-resort.
+
+    CSR #965: 비대화형 + 후보 ≥2 시 silent most-recent 추측을 금지 (fail-closed).
+    단일 후보는 그대로 사용 (정상 단일 세션 무회귀). global rglob 폴백 제거.
+    """
     cwd_hash = str(Path(os.getcwd()).resolve()).replace("/", "-")
     project_dir = PROJECTS_BASE / cwd_hash
 
@@ -106,17 +129,18 @@ def find_jsonl(confirm: bool = False) -> Path | None:
             reverse=True,
         )
     else:
-        candidates = sorted(
-            PROJECTS_BASE.rglob("*.jsonl"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )[:5]
+        candidates = []
 
     if not candidates:
         print("❌ No JSONL session files found.", file=sys.stderr)
         return None
 
-    if confirm and len(candidates) > 1:
+    # 단일 후보 — 모호성 없음, 그대로 사용 (무회귀)
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # 후보 ≥2 + 대화형 — 사용자 선택
+    if confirm:
         print("Available sessions (most recent first):")
         for i, p in enumerate(candidates[:5], 1):
             import datetime
@@ -124,15 +148,22 @@ def find_jsonl(confirm: bool = False) -> Path | None:
             print(f"  {i}. {p.name}  ({mt}, {p.stat().st_size // 1024} KB)")
         try:
             choice = input("Select [1]: ").strip() or "1"
-        except EOFError:
-            print("[WARN] Non-interactive environment — using most recent session.", file=sys.stderr)
-            return candidates[0]
-        try:
             return candidates[int(choice) - 1]
+        except EOFError:
+            pass  # 비대화형 → 아래 fail-closed 로 진행 (CSR #965: 추측 금지)
         except (IndexError, ValueError):
             return candidates[0]
 
-    return candidates[0]
+    # 후보 ≥2 + 비대화형 → 추측 금지 (cross-session 오탐 차단, CSR #965)
+    print(
+        f"⚠ {len(candidates)}개 세션 후보 발견 — session_id 미확보 상태에서 "
+        "자동 선택을 거부합니다 (CSR #965). --jsonl <경로> 명시 또는 "
+        "--confirm 대화형 선택을 사용하세요.",
+        file=sys.stderr,
+    )
+    for p in candidates[:5]:
+        print(f"  - {p.name}", file=sys.stderr)
+    return None
 
 
 _MAX_JSONL_SIZE = 100 * 1024 * 1024  # 100MB
@@ -504,26 +535,50 @@ def build_unified_skill_view(
 
 
 def build_tier_coverage_summary(candidates: list[dict]) -> dict[str, dict]:
-    """Tier별 coverage 집계.
+    """Tier별 coverage 집계 (CSR #965 — v2 4-status 구분).
+
+    v2 detected status: "executed" | "triggered" | "artifact_confirmed" | "miss".
+    - confirmed(=detected) = executed + artifact_confirmed (실제 실행 증거)
+    - signal_only = triggered (파일/에러 신호만 — 실행 증거 아님)
+    - miss 는 어느 confirmed 카운트에도 포함 안 됨
+
+    이전 버그(CSR #965): `if detected_val:` 가 v2 문자열("miss" 포함)을 모두
+    truthy 로 집계 → 전부 detected 로 오집계. v1 bool/"artifact" 입력 호환 유지.
 
     Returns:
-        {'A': {'total': N, 'detected': M, 'skills': [...]},
-         'B': {...}, 'C': {...}, 'D': {...}, '?': {...}}
+        {'A': {'total': N, 'detected': C, 'executed': X, 'artifact': Y,
+               'signal_only': Z, 'miss': W, 'skills': [{skill, status}, ...]}, ...}
+        ('detected' = executed+artifact — v1 JSON 소비자 back-compat 유지)
     """
     tiers: dict[str, dict] = {}
     for c in candidates:
         tier = c.get("tier", "?")
-        entry = tiers.setdefault(tier, {"total": 0, "detected": 0, "skills": []})
+        entry = tiers.setdefault(
+            tier,
+            {"total": 0, "detected": 0, "executed": 0,
+             "artifact": 0, "signal_only": 0, "miss": 0, "skills": []},
+        )
         entry["total"] += 1
-        detected_val = c.get("detected")
-        # detected=True (slash) | detected="artifact" (hook .done) | detected=False
-        # triggered_by는 트리거 조건만 충족 — 실제 실행 증거 아님 → detected 카운트 제외
-        if detected_val:
+        status = c.get("detected")
+        # v1 호환 정규화: True→executed, "artifact"→artifact_confirmed,
+        # False/None→ triggered(신호 있으면) | miss
+        if status is True:
+            status = "executed"
+        elif status == "artifact":
+            status = "artifact_confirmed"
+        elif status is False or status is None:
+            status = "triggered" if c.get("triggered_by") else "miss"
+        if status == "executed":
+            entry["executed"] += 1
             entry["detected"] += 1
-        entry["skills"].append({
-            "skill": c.get("skill", ""),
-            "detected": detected_val if detected_val else bool(c.get("triggered_by")),
-        })
+        elif status == "artifact_confirmed":
+            entry["artifact"] += 1
+            entry["detected"] += 1
+        elif status == "triggered":
+            entry["signal_only"] += 1
+        else:  # miss
+            entry["miss"] += 1
+        entry["skills"].append({"skill": c.get("skill", ""), "status": status})
     return tiers
 
 
@@ -601,20 +656,19 @@ def print_report(
                 if not info:
                     continue
                 def _skill_badge(s: dict) -> str:
-                    d = s.get("detected")
-                    if d is True:
-                        return f"{s['skill']}✓"
-                    if d == "artifact":
-                        return f"{s['skill']}🔶"
-                    return s["skill"]
+                    # CSR #965 — v2 4-status 뱃지 (이전: d is True/"artifact" 가 v2 문자열과 미매칭)
+                    mark = {"executed": "✅", "triggered": "⚠",
+                            "artifact_confirmed": "🔶", "miss": "✗"}.get(s.get("status"), "")
+                    return f"{s['skill']}{mark}"
 
                 skills_brief = ", ".join(_skill_badge(s) for s in info["skills"])
                 print(
-                    f"- Tier {tier}: {info['detected']}/{info['total']} detected — "
-                    f"{skills_brief}"
+                    f"- Tier {tier}: executed {info['executed']} / "
+                    f"signal-only {info['signal_only']} / artifact {info['artifact']} / "
+                    f"miss {info['miss']} (total {info['total']}) — {skills_brief}"
                 )
-            print("  ℹ 'detected' = slash command 실행 감지 OR 파일/에러 신호 매칭 [ESTIMATED]")
-            print("  🔶 = gate-artifact .done 마커 확인 (hook 방식 처리 — 정상 동작)")
+            print("  ℹ executed ✅ = slash 실행 / signal-only ⚠ = 파일·에러 신호만(실행 아님) "
+                  "/ artifact 🔶 = .done 마커 / miss ✗ = 미매칭")
 
     print()
     if has_retro:
@@ -670,7 +724,11 @@ def main() -> int:
     # 트랙 감지 (JSONL 결정 전 수행 — Track 1은 JSONL을 직접 제공)
     has_retro, retro_jsonl_path = is_retro_available()
 
-    # JSONL 결정: 우선순위 --jsonl > Track1 > find_jsonl (CSR #829 #3 — 절대 우선순위 보장)
+    # JSONL 결정 우선순위 (CSR #965 — session_id-direct 추가):
+    #   --jsonl > session_id-direct > Track1 > find_jsonl
+    # session_id-direct 가 동시 세션 공유 cwd 에서 cross-session 오탐을 근본 차단.
+    _resolved_sid: str | None = None
+    _jsonl_source = ""  # explicit | session_id_direct | track1 | find_jsonl
     if args.jsonl:
         # --jsonl 경로 검증 (PROJECTS_BASE 또는 /tmp 하위만 허용)
         import tempfile as _tf
@@ -690,10 +748,21 @@ def main() -> int:
         print(f"[INFO] --jsonl 명시 사용: {requested.name} (Track1·자동 detection skip)",
               file=sys.stderr)
         jsonl: Path | None = requested
-    elif retro_jsonl_path:
-        jsonl = Path(retro_jsonl_path)
+        _jsonl_source = "explicit"
     else:
-        jsonl = find_jsonl(confirm=args.confirm)
+        # session_id-direct (CSR #965 PRIMARY): 현재 세션 session_id 로 정확 해석
+        _resolved_sid = extract_session_id() or None
+        _sid_jsonl = find_jsonl_by_session_id(_resolved_sid) if _resolved_sid else None
+        if _sid_jsonl:
+            jsonl = _sid_jsonl
+            _jsonl_source = "session_id_direct"
+            print(f"[INFO] session_id-direct 해석: {jsonl.name} (CSR #965)", file=sys.stderr)
+        elif retro_jsonl_path:
+            jsonl = Path(retro_jsonl_path)
+            _jsonl_source = "track1"
+        else:
+            jsonl = find_jsonl(confirm=args.confirm)
+            _jsonl_source = "find_jsonl"
 
     if not jsonl:
         return 2
@@ -718,10 +787,15 @@ def main() -> int:
     # 슬래시 커맨드 추출 + Hard Gate 후보 탐지
     slash_commands = extract_slash_commands(jsonl, max_events=args.max_edits * 2)
     error_signals = [r for r in signal_recs if r.get("source") == "error_signal"]
-    # session_id: JSONL 파일명(UUID)에서 추출 — standalone 실행 시 env var 미의존
-    _jsonl_stem = jsonl.stem if jsonl else ""
-    _session_id_from_jsonl = _jsonl_stem if (len(_jsonl_stem) > 30 and "-" in _jsonl_stem) else None
-    _current_session_id = _session_id_from_jsonl or extract_session_id() or None
+    # session_id 단일 진실원 (CSR #965 H-2): session_id-direct 로 해석된 경우
+    # 그 session_id 가 authoritative — stem 역도출로 재계산하지 않는다.
+    # --jsonl 명시 / track1 / find_jsonl 경로는 기존 stem→extract 폴백 유지.
+    if _jsonl_source == "session_id_direct":
+        _current_session_id = _resolved_sid
+    else:
+        _jsonl_stem = jsonl.stem if jsonl else ""
+        _session_id_from_jsonl = _jsonl_stem if (len(_jsonl_stem) > 30 and "-" in _jsonl_stem) else None
+        _current_session_id = _session_id_from_jsonl or extract_session_id() or None
     hard_gate_candidates, gate_warnings = build_hard_gate_candidates(
         edits, slash_commands, error_signals, session_id=_current_session_id
     )

@@ -9,17 +9,22 @@ Anthropic 공식 경로는 hook stdin JSON의 .session_id 필드.
     session_id = extract_session_id()               # .session-hint fallback + env var
     session_id = extract_session_id(stdin_json)     # hook stdin 캡처본 전달
 
-우선순위 (CSR #815, bash session-id.sh 대칭):
-    1) stdin JSON .session_id (hook 전용)
-    2) .session-hint 파일 (scope 격리, 1시간 TTL — standalone CLI 용)
-    3) CLAUDE_SESSION_ID env var (deprecation, 2026-05-01까지 유효)
+우선순위 (CSR #965 재정렬 — source trust class):
+    1) stdin JSON .session_id   (authoritative — hook 전용)
+    2) CLAUDE_CODE_SESSION_ID    (platform — Anthropic 공식 per-process env, 2026 Week 19)
+    3) .session-hint 파일        (heuristic — cwd md5 키, 1시간 TTL, standalone CLI 용)
+
+⚠ bash session-id.sh 와 의도적 divergence: bash 는 env var 미사용
+   (hook stdin → .session-hint). Python lib 은 공식 per-process env var
+   (CLAUDE_CODE_SESSION_ID) 를 platform 신뢰도로 추가 — 이것이 없으면
+   동일 cwd 동시 세션이 공유 .session-hint 를 통해 cross-session 오염됨
+   (CSR #965 근본 원인). deprecated CLAUDE_SESSION_ID 는 제거 (2026-05-01 만료, CWE-613).
 """
 
 import hashlib
 import json
 import os
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -88,18 +93,19 @@ def extract_session_id(hook_input: Optional[str] = None) -> Optional[str]:
         except (json.JSONDecodeError, AttributeError):
             pass
 
-    # 2순위 (CSR #815): .session-hint 파일 — standalone CLI 지원
+    # 2순위 (platform): CLAUDE_CODE_SESSION_ID — Anthropic 공식 per-process env var
+    # (2026 Week 19 도입). process-local 이므로 동일 cwd 동시 세션이어도
+    # 공유 .session-hint 와 달리 cross-session 오염되지 않음 (CSR #965 PRIMARY fix).
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    if sid:
+        return sid
+
+    # 3순위 (heuristic): .session-hint 파일 — standalone CLI 지원 (CSR #815)
+    # ⚠ cwd md5 키 → 동일 cwd 동시 세션 간 공유. platform 소스보다 낮은 신뢰도.
     sid = _read_session_hint()
     if sid:
         return sid
 
-    # 3순위: CLAUDE_SESSION_ID env var (deprecation)
-    sid = os.environ.get("CLAUDE_SESSION_ID", "").strip()
-    if sid:
-        sys.stderr.write(
-            "[DEPRECATION] CLAUDE_SESSION_ID env var 의존은 2026-05-01까지 유효. "
-            "hook stdin JSON .session_id 또는 .session-hint 사용 권장.\n"
-        )
-        return sid
-
+    # CLAUDE_SESSION_ID env var fallback 제거 (2026-05-01 만료, CWE-613 stale SID
+    # 세션 경계 오염. bash session-id.sh 와 동일하게 제거 — CSR #965).
     return None
