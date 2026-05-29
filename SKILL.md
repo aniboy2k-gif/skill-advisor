@@ -195,8 +195,21 @@ for item in skills:
     issues = []
 
     # C1: 깨진 절대 경로 참조
+    # glob 메타문자(* ? [)가 있으면 리터럴 경로가 아니라 패턴 — glob-expand 후
+    # "매칭 0건일 때만" 경고한다. transient 패턴(/tmp/csr-*.md 등)은 현재 매칭이
+    # 없어도 정상 트리거이므로 경고 제외 (CSR #969: C1 glob false-positive 수정).
+    import glob as _glob
     for g in globs:
-        if g.startswith("/") and not Path(g).exists():
+        if not g.startswith("/"):
+            continue
+        if any(ch in g for ch in "*?["):
+            # 패턴: 디렉토리(부모)가 실재하고 transient(/tmp, /var/folders 등)면 정상
+            parent = os.path.dirname(g.split("*")[0].rstrip("/")) or "/"
+            is_transient = g.startswith("/tmp/") or "/T/" in g or g.startswith("/var/folders/")
+            if not is_transient and not _glob.glob(g) and not Path(parent).exists():
+                issues.append({"severity": "critical", "code": "C1",
+                               "msg": f"깨진 glob (부모 경로 부재, 매칭 0): {g}"})
+        elif not Path(g).exists():
             issues.append({"severity": "critical", "code": "C1",
                            "msg": f"깨진 참조: {g}"})
 
@@ -231,11 +244,17 @@ for item in skills:
 
     # OPT-1: trigger_block + file_path_globs>0 + description>100자 → "(hook)" 단축 권장
     # opt-out: SKILL.md YAML에 hook_no_opt: true 플래그 시 억제
+    # CSR #969: utterance 보유 OR critical-tier(A/B/C) Hard Gate 는 제외 —
+    #   이런 스킬의 description 은 invocation 라우팅 신호(파일 glob 자동 트리거가
+    #   아니라 utterance/수동 호출 의존)라 "(hook)" 단축 시 discoverability 손상.
+    #   (auto-loader 는 critical 미주입 → glob 자동 트리거도 불확실, #966 참조)
     skill_meta = item  # item이 곧 meta dict
     if (source_kind == "trigger_block"
             and len(globs) > 0
             and len(desc) > 100
             and desc != "(hook)"
+            and not has_utterances
+            and skill_name not in hard_gate_ids_critical
             and not skill_meta.get("hook_no_opt", False)):
         issues.append({"severity": "info", "code": "OPT-1",
                        "msg": f"[listing 최적화] hook 스킬이지만 description {len(desc)}자 — "
@@ -251,19 +270,32 @@ for item in skills:
     })
 
 # C1-b: SSOT ↔ 설치 불일치 (스킬별이 아닌 전역 단계)
+# hook 구현 게이트 제외 (CSR #969: C1-b hook-gate false-positive 수정).
+# tool_events_bash_if 있음(=hook 강제) 또는 tier=D advisory면 SKILL.md file_path는
+# 인벤토리 placeholder일 수 있음 — 미설치를 critical로 오탐하지 않는다.
 installed_skill_ids = {item.get("skill") for item in skills}
 for gate_id, gate in hard_gate_map.items():
     fp_raw = gate.get("file_path", "")
     fp = Path(os.path.expanduser(fp_raw)) if fp_raw else None
+    is_hook_impl = bool(gate.get("tool_events_bash_if"))
+    is_advisory = gate.get("tier") == "D"
     if fp and not fp.exists():
-        # hard-gates.json은 선언했지만 파일 미존재
-        results.append({
-            "skill": f"<SSOT:{gate_id}>",
-            "source_kind": "ssot_only",
-            "globs": 0, "events": 0, "has_utterances": False,
-            "issues": [{"severity": "critical", "code": "C1-b",
-                        "msg": f"SSOT 선언 Hard Gate 미설치: {gate_id} → {fp_raw}"}]
-        })
+        if is_hook_impl or is_advisory:
+            # hook/advisory 게이트 — file_path는 placeholder, INFO로 강등
+            results.append({
+                "skill": f"<SSOT:{gate_id}>", "source_kind": "ssot_only",
+                "globs": 0, "events": 0, "has_utterances": False,
+                "issues": [{"severity": "info", "code": "C1-b-hook",
+                            "msg": f"SSOT file_path placeholder (hook/advisory 구현): {gate_id} → {fp_raw}"}]
+            })
+        else:
+            # 진짜 critical: A/B/C tier + 비-hook 게이트가 미설치
+            results.append({
+                "skill": f"<SSOT:{gate_id}>", "source_kind": "ssot_only",
+                "globs": 0, "events": 0, "has_utterances": False,
+                "issues": [{"severity": "critical", "code": "C1-b",
+                            "msg": f"SSOT 선언 Hard Gate 미설치: {gate_id} → {fp_raw}"}]
+            })
 ```
 
 **3단계 — M1 중복 glob 감지**
