@@ -1,12 +1,13 @@
 """session_id.py — Claude Code hook stdin JSON에서 session_id 추출 공통 유틸.
 
-배경: CLAUDE_SESSION_ID 환경변수는 Anthropic 공식 API가 아니다
-(GitHub issues #25642 / #13733 / #17188 모두 OPEN feature request).
-Anthropic 공식 경로는 hook stdin JSON의 .session_id 필드.
+배경: Anthropic 공식 경로는 hook stdin JSON의 .session_id 필드 + 공식
+per-process 환경변수 CLAUDE_CODE_SESSION_ID (2026 Week 19 도입).
+구 CLAUDE_SESSION_ID 환경변수는 공식 API가 아니며 제거됨 (CSR #965;
+GitHub issues #25642 / #13733 / #17188 모두 OPEN feature request).
 
 사용법:
     from lib.session_id import extract_session_id
-    session_id = extract_session_id()               # .session-hint fallback + env var
+    session_id = extract_session_id()               # CLAUDE_CODE_SESSION_ID → .session-hint
     session_id = extract_session_id(stdin_json)     # hook stdin 캡처본 전달
 
 우선순위 (CSR #965 재정렬 — source trust class):
@@ -78,7 +79,7 @@ def extract_session_id(hook_input: Optional[str] = None) -> Optional[str]:
     """session_id를 우선순위에 따라 반환.
 
     Args:
-        hook_input: hook stdin에서 읽은 JSON 문자열. 없으면 .session-hint + env var.
+        hook_input: hook stdin에서 읽은 JSON 문자열. 없으면 CLAUDE_CODE_SESSION_ID → .session-hint 순.
 
     Returns:
         session_id 문자열 또는 None (모든 source 비어있을 때).
