@@ -17,8 +17,14 @@ except ImportError:
     _primary = Path.home() / ".claude" / "da-tools" / "skill-index.json"
     SKILL_INDEX = _primary if _primary.exists() else Path("/tmp/skill-index.json")
 
-# 라인 시작 또는 공백 뒤에 등장하는 슬래시 커맨드만 매칭 (경로 오탐 방지)
+# 라인 시작 또는 공백 뒤에 등장하는 슬래시 커맨드만 매칭 (경로 오탐 방지) — mention 스캔용
 _SLASH_RE = re.compile(r"(?:^|\s)/[\w][\w-]*", re.MULTILINE)
+
+# CSR #973: 실제 슬래시 호출은 Claude Code가 user entry의 message.content(문자열)에
+# <command-name>/foo</command-name> 트리플릿으로 기록한다. 인용/논의 텍스트는 content가
+# 리스트(text 블록)거나 tool_result라 이 경로로 들어오지 않는다 (da-chain C-1 해소).
+# 콜론 네임스페이스(/sc:analyze, /a:b:c)·점·하이픈 캡처 (da-chain H-1). 다중 호출 finditer (M-2).
+_CMD_NAME_RE = re.compile(r"<command-name>\s*/?([\w][\w:.-]*)\s*</command-name>")
 
 # 스킬명 확인 없이도 허용할 알려진 슬래시 커맨드 prefix
 _KNOWN_PREFIXES = (
@@ -60,19 +66,20 @@ def extract_slash_commands(jsonl: Path, max_events: int = 500) -> list[str]:
                     continue
                 if entry.get("type") != "user":
                     continue
-                count += 1
-                content = entry.get("message", {}).get("content") or []
-                if not isinstance(content, list):
+                # 메타 turn (요약·시스템 주입)은 실제 사용자 호출이 아님 (da-chain C-1)
+                if entry.get("isMeta"):
                     continue
-                for block in content:
-                    if not isinstance(block, dict) or block.get("type") != "text":
-                        continue
-                    text = block.get("text", "")
-                    for m in _SLASH_RE.finditer(text):
-                        raw = m.group().strip()
-                        cmd = raw.lstrip("/")
-                        if cmd in known or any(cmd.startswith(p) for p in _KNOWN_PREFIXES):
-                            found.append("/" + cmd)
+                count += 1
+                content = entry.get("message", {}).get("content")
+                # CSR #973: 실제 호출만 executed로 인정 — content가 '문자열'이고
+                # <command-name> 트리플릿일 때만. 리스트(text 블록)·tool_result에 등장하는
+                # <command-name>/cmd 인용은 호출이 아니므로 제외 (da-chain C-1 false-positive 차단).
+                if not isinstance(content, str) or "<command-name>" not in content:
+                    continue
+                for m in _CMD_NAME_RE.finditer(content):
+                    cmd = m.group(1)  # 슬래시 없이 캡처됨 (정규식 /? 소비) — 콜론/점/하이픈 보존
+                    if cmd in known or any(cmd.startswith(p) for p in _KNOWN_PREFIXES):
+                        found.append("/" + cmd)
     except Exception:
         pass
     # dedup, 최초 등장 순서 유지
