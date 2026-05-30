@@ -24,6 +24,9 @@ _SLASH_RE = re.compile(r"(?:^|\s)/[\w][\w-]*", re.MULTILINE)
 # <command-name>/foo</command-name> 트리플릿으로 기록한다. 인용/논의 텍스트는 content가
 # 리스트(text 블록)거나 tool_result라 이 경로로 들어오지 않는다 (da-chain C-1 해소).
 # 콜론 네임스페이스(/sc:analyze, /a:b:c)·점·하이픈 캡처 (da-chain H-1). 다중 호출 finditer (M-2).
+# ★ 버전 의존 (da-chain H-2): 본 구조(content=str + <command-name> 트리플릿) 가정은 Claude Code
+#   v2.1.157 기준 실측. 향후 Claude Code 버전 변경 시 transcript user entry의 슬래시 호출 표현이
+#   바뀌면 본 탐지가 false-negative 될 수 있으므로 content 구조 재확인 필요.
 _CMD_NAME_RE = re.compile(r"<command-name>\s*/?([\w][\w:.-]*)\s*</command-name>")
 
 # 스킬명 확인 없이도 허용할 알려진 슬래시 커맨드 prefix
