@@ -43,7 +43,7 @@ def test_verification_triggers_on_test_file_edit():
 
 def test_no_false_trigger_on_docs_only_session():
     """A docs-only / unrelated edit session must NOT trigger verification-before-completion
-    (false-positive ceiling). 'complete'/'done' do not appear in these paths."""
+    (false-positive ceiling)."""
     edits = [
         {"file": "/proj/docs/guide.md", "tool": "Edit"},
         {"file": "/proj/README.rst", "tool": "Write"},
@@ -52,6 +52,24 @@ def test_no_false_trigger_on_docs_only_session():
     g = _gate(results, "verification-before-completion")
     assert g is not None
     assert g["detected"] == "miss", g
+
+
+def test_removed_response_text_tokens_no_false_positive():
+    """CSR #1027 follow-up: the noisy response-text tokens (완료/done/finished/complete/구현 완료)
+    were REMOVED because session_signals match file paths + error snippets (not response text),
+    so they only produced false positives via substring (e.g. 'complete' in 'autocomplete').
+    These realistic paths must now report 'miss' (da-chain Gemini MEDIUM / ChatGPT LOW)."""
+    fp_paths = [
+        "/proj/src/complete_handler.py",   # 'complete' substring (was FP)
+        "/proj/incomplete.md",             # 'complete' in 'incomplete' (was FP)
+        "/proj/ui/autocomplete.tsx",       # 'complete' in 'autocomplete' (was FP)
+        "/proj/done_list.txt",             # 'done' substring (was FP)
+    ]
+    for p in fp_paths:
+        results, _ = build_hard_gate_candidates([{"file": p, "tool": "Edit"}], [], [], session_id=None)
+        g = _gate(results, "verification-before-completion")
+        assert g is not None
+        assert g["detected"] == "miss", f"false positive on {p}: {g}"
 
 
 def test_pytest_token_not_added_avoids_cross_gate_collision():
