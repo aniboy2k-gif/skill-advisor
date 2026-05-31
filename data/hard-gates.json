@@ -25,7 +25,7 @@
       "skill": "verification-before-completion",
       "trigger_pattern": "코드·기능 구현 완료 선언 전",
       "trigger_pattern_en": "before claiming completion",
-      "session_signals": ["완료", "done", "finished", "complete", "구현 완료"]
+      "session_signals": ["완료", "done", "finished", "complete", "구현 완료", "conftest", "/tests/", "_test.", ".spec.", ".test."]
     },
     {
       "skill": "vercel-react-best-practices",
