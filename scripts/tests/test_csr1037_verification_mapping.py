@@ -54,11 +54,13 @@ def _veri_err_record(snippet: str) -> list[dict]:
 # Multi-runner recall (Claude Web H1 / ChatGPT H1: go/rspec/cargo/jest must not regress).
 
 _RUNNER_FAILURES = {
-    "pytest": "FAILED tests/test_foo.py::test_bar - AssertionError: assert 1 == 2\n===== 1 failed in 0.12s =====",
-    "go": "--- FAIL: TestFoo (0.00s)\nFAIL\nexit status 1\nFAIL\tgithub.com/x/y\t0.002s",
-    "rspec": "Failures:\n  1) Foo does bar\n     Failure/Error: expect(x).to eq(y)\n1 example, 1 failure",
-    "cargo": "test tests::it_works ... FAILED\nfailures:\n    tests::it_works\ntest result: FAILED. 0 passed; 1 failed",
-    "jest": "● Component › renders\n  expect(received).toBe(expected)\nTests: 1 failed, 1 passed",
+    # Each fires on a RUNNER-SPECIFIC FINGERPRINT token, not a generic word (CSR #1037 deep-verify).
+    "pytest": "FAILED tests/test_foo.py::test_bar - AssertionError: assert 1 == 2\n===== 1 failed in 0.12s =====",  # AssertionError
+    "go": "--- FAIL: TestFoo (0.00s)\nFAIL\nexit status 1\nFAIL\tgithub.com/x/y\t0.002s",                          # --- FAIL
+    "rspec": "Failures:\n  1) Foo does bar\n     Failure/Error: expect(x).to eq(y)\n1 example, 1 failure",         # Failure/Error
+    "cargo": "test tests::it_works ... FAILED\nfailures:\n    tests::it_works\ntest result: FAILED. 0 passed; 1 failed",  # test result: FAILED
+    "jest": "● Component › renders\n  expect(received).toBe(expected)\nTests: 1 failed, 1 passed",                # expect(received
+    "vitest": "FAIL src/foo.test.ts > works\n  expect(received).toBe(expected)\n Tests  1 failed | 2 passed",     # expect(received
 }
 
 
@@ -94,6 +96,14 @@ _NEGATIVE_FAILURES = [
     "multiple failures detected in pipeline",
     "Build step marked build as failure",
     "kernel panic: fatal error out of memory",
+    # adversarial colon forms — these regressed the 'failures:'/'Tests:' token set (Round-2 deep-verify
+    # found FP 6/22); the runner-FINGERPRINT set (Failure/Error, test result: FAILED, expect(received)
+    # is immune because none of these is a runner-specific string.
+    "lint failed: 3 failures: in src/, run eslint",
+    "deploy aborted; validation failures: 2 endpoints unreachable",
+    "ERROR: config schema failures: missing key 'port'",
+    "curl: (7) Failed to connect; 0 failures: in retry log",
+    "make: *** [build] Error 1; Note: see Tests: directory for layout",
 ]
 
 
