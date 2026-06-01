@@ -213,7 +213,15 @@ def test_hard_gate_candidates_in_json_output(tmp_path, capsys):
 
 
 def test_slash_command_no_false_positive(tmp_path):
-    """슬래시 커맨드 추출 시 경로(/usr/local) 및 URL 경로 오탐 없음."""
+    """슬래시 커맨드 추출 오탐 방지 (CSR #1038 — #973 구조 기반 contract 정합).
+
+    CSR #973 이후 extract_slash_commands는 message.content가 '문자열'이고
+    <command-name> 트리플릿일 때만 추출한다 (자유텍스트 미스캔). 따라서:
+      (1) 구조적 게이트: 자유텍스트의 경로/URL(/usr/local 등)은 추출 안 됨.
+      (2) 화이트리스트 필터(session_activity.py: known + _KNOWN_PREFIXES):
+          트리플릿 *내부*라도 비화이트리스트 토큰(/usr)은 제외 — 진짜 오탐 surface.
+      (3) exact-set: 화이트리스트 트리플릿만 정확히 추출.
+    """
     import importlib
     sa_path = Path(__file__).parent.parent / "session_activity.py"
     spec = importlib.util.spec_from_file_location("session_activity", sa_path)
@@ -221,20 +229,25 @@ def test_slash_command_no_false_positive(tmp_path):
     spec.loader.exec_module(sa_mod)
 
     jsonl_file = tmp_path / "test.jsonl"
-    text_with_paths = (
-        'Looking at /usr/local/bin/python3 and https://github.com/owner/repo/issues '
-        '/plan is needed here. Check /skill-advisor for details.'
+    # content = 문자열 (#973 contract). 자유텍스트 경로/URL 노이즈 + 화이트리스트
+    # 트리플릿 2개(/plan, /skill-advisor) + 비화이트리스트 트리플릿 1개(/usr).
+    text = (
+        'Looking at /usr/local/bin/python3 and https://github.com/owner/repo/issues. '
+        '<command-name>/plan</command-name> and <command-name>/skill-advisor</command-name> '
+        'and <command-name>/usr</command-name> should be filtered.'
     )
     jsonl_file.write_text(
-        '{"type":"user","message":{"content":[{"type":"text","text":"'
-        + text_with_paths.replace('"', '\\"') + '"}]}}\n'
+        '{"type":"user","message":{"content":"'
+        + text.replace('"', '\\"') + '"}}\n'
     )
     cmds = sa_mod.extract_slash_commands(jsonl_file)
-    # /plan, /skill-advisor만 허용, /usr /local /bin /python3 /owner /repo /issues는 제외
+    # (2) 화이트리스트 필터 실검증: 트리플릿 내부라도 비화이트리스트 /usr은 제외 (진짜 오탐 surface)
+    assert "/usr" not in cmds, f"Non-whitelisted /usr leaked through whitelist filter: {cmds}"
+    # (1) 구조적 게이트: 자유텍스트 경로 토큰은 추출 안 됨 (free-text 미스캔 regression guard)
     false_positives = [c for c in cmds if c in ("/usr", "/local", "/bin", "/python3", "/owner", "/repo", "/issues")]
     assert not false_positives, f"False positives detected: {false_positives}"
-    valid = [c for c in cmds if c in ("/plan", "/skill-advisor")]
-    assert len(valid) >= 1, f"Expected at least /plan or /skill-advisor, got: {cmds}"
+    # (3) exact-set: 화이트리스트 트리플릿만 정확히 추출 (>= 1 보다 강한 검증)
+    assert set(cmds) == {"/plan", "/skill-advisor"}, f"Expected exactly /plan and /skill-advisor, got: {cmds}"
 
 
 # ── D-H2: H1-E logic correctness ─────────────────────────────────────────────
