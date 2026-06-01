@@ -127,13 +127,20 @@ def test_systematic_debugging_error_tokens_revived():
     assert labels, g
 
 
-def test_verification_triggers_on_test_path_in_error_snippet():
-    """CSR #1029 검증기준 #2: a test-failure session (runs only, NO edits) flips
-    verification-before-completion when the error snippet embeds a `/tests/` path."""
+def test_verification_triggers_on_test_failure_session_functional():
+    """CSR #1029 criterion #2, re-pinned at the FUNCTIONAL level by CSR #1037.
+
+    SUPERSEDES test_verification_triggers_on_test_path_in_error_snippet (which asserted the
+    `error:/tests/` MECHANISM). The CONTRACT preserved: a test-failure session (runs only, NO
+    edits) still flips verification-before-completion to 'triggered'. The MECHANISM changed: it now
+    fires on a failure-OUTCOME token from verification's OWN dedicated mapping (CSR #1037 Option
+    1S), NOT on the `/tests/` path token borrowed from systematic-debugging's snippet. This test
+    asserts the OUTCOME (gate triggered) independent of the internal triggered_by label format, so
+    it stays green even if the error_signal schema evolves."""
     error_signals = [{
-        "skill": "systematic-debugging",
+        "skill": "verification-before-completion",
         "source": "error_signal",
-        "signal": "test failure pattern",
+        "signal": "test failure (completion-time)",
         "evidence_count": 1,
         "confidence": "medium",
         "snippet": "FAILED /proj/tests/test_foo.py::test_bar - AssertionError",
@@ -141,8 +148,9 @@ def test_verification_triggers_on_test_path_in_error_snippet():
     results, _ = build_hard_gate_candidates([], [], error_signals, session_id=None)
     g = _gate(results, "verification-before-completion")
     assert g is not None
-    assert g["detected"] == "triggered", g
-    assert any(t == "error:/tests/" for t in g["triggered_by"]), g
+    assert g["detected"] == "triggered", g  # functional contract, mechanism-agnostic
+    # and it must NOT be the superseded /tests/ path mechanism
+    assert not any(t == "error:/tests/" for t in g["triggered_by"]), g
 
 
 def test_error_snippet_false_positive_ceiling():

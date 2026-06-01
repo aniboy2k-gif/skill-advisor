@@ -414,21 +414,32 @@ def build_hard_gate_candidates(
                 artifact_confirmed = True
 
         triggered_by: list[str] = []
+        # CSR #1037: per-signal match_target (hard-gates.json `signal_match_targets` sibling object,
+        # schema 1.1). A token maps to "file" (match edited paths only), "error" (match error
+        # snippets only), or "both". Tokens absent from the map — and every gate without the field —
+        # default to "both", so this is fully backward-compatible. This lets verification's path
+        # tokens (/tests/ etc.) be file-only (removing the /tests/-in-error-text FP) while its
+        # OUTCOME tokens (AssertionError, --- FAIL, ...) are error-only (criterion #2 via failure
+        # outcome, not path presence).
+        match_targets = gate.get("signal_match_targets", {})
         for sig in gate.get("session_signals", []):
             sig_lower = sig.lower()
-            for edit in edits:
-                if sig_lower in edit["file"].lower():
-                    name = Path(edit["file"]).name
-                    if f"file:{name}" not in triggered_by:
-                        triggered_by.append(f"file:{name}")
-                    break
-            for err in error_signals:
-                snippet = err.get("snippet", "")
-                if sig_lower in snippet.lower():
-                    label = f"error:{sig}"
-                    if label not in triggered_by:
-                        triggered_by.append(label)
-                    break
+            target = match_targets.get(sig, "both")
+            if target in ("file", "both"):
+                for edit in edits:
+                    if sig_lower in edit["file"].lower():
+                        name = Path(edit["file"]).name
+                        if f"file:{name}" not in triggered_by:
+                            triggered_by.append(f"file:{name}")
+                        break
+            if target in ("error", "both"):
+                for err in error_signals:
+                    snippet = err.get("snippet", "")
+                    if sig_lower in snippet.lower():
+                        label = f"error:{sig}"
+                        if label not in triggered_by:
+                            triggered_by.append(label)
+                        break
 
         # v2 detected (4 string status — CSR #825 C-A1 회피, triggered_by 비어있지 않으면 격상)
         if slash_matched:

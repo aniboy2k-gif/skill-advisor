@@ -66,6 +66,17 @@
       "domain_globs": ["**/auth*", "**/security*", "**/middleware*", "**/guards/**", "**/permissions*"],
       "skill": "security-pipeline",
       "evidence_label": "security/auth error pattern"
+    },
+    {
+      "id": "test-failure-completion",
+      "_comment": "CSR #1037: dedicated mapping so verification-before-completion produces its OWN error_signal record (criterion #1) instead of borrowing systematic-debugging's /tests/ path token via cross-gate substring. Tokens key on test failure OUTCOME (not path PRESENCE) and are anchored to test-runner phrasing (AssertionError / go '--- FAIL' / rspec+cargo 'failures'/'failure' / jest 'failed,' / pytest 'failed in') to avoid generic runtime-failure FPs ('connection failed', 'deploy failed'). TOKEN OWNERSHIP: this set is tuned against tests/test_csr1037_verification_mapping.py (recall: pytest/go/rspec/cargo/jest; FP<=2: non-test failures); extend only with a matching fixture. HONEST: precision improvement, not a completion-context solution (see CSR #1030 follow-up).",
+      "triggers": {
+        "error_keywords": ["AssertionError", "--- FAIL", "failures", "failure", "test failed", "failed in", "failed,"],
+        "min_count": 1
+      },
+      "domain_globs": [],
+      "skill": "verification-before-completion",
+      "evidence_label": "test failure (completion-time)"
     }
   ]
 }
