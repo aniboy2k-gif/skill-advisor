@@ -27,6 +27,28 @@ _SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
 
 _DEFAULT_THRESHOLDS = {"low": 0, "medium": 3, "high": 5}
 
+# CSR #1029: total cap for the canonical snippet text propagated into an error_signal record.
+# Bounds payload size; per-snippet text is already truncated upstream (jsonl_analyzer _MAX_SNIPPET).
+_MAX_SIGNAL_SNIPPET = 4000
+
+
+def _canonical_snippet(matched: list[dict]) -> str:
+    """Join matched error snippets into one canonical, value-deduped, length-capped string.
+
+    CSR #1029: session-review.build_hard_gate_candidates reads err.get("snippet","").lower() and
+    matches gate session_signals against it. Exposing a single canonical string (rather than
+    emitting per-snippet) follows the G-Ex Sentry-style fingerprint-grouping design — it keeps the
+    branch live while avoiding duplicate-trigger false positives.
+    """
+    seen: set[str] = set()
+    parts: list[str] = []
+    for e in matched:
+        s = e.get("error_snippet", "")
+        if s and s not in seen:
+            seen.add(s)
+            parts.append(s)
+    return "\n".join(parts)[:_MAX_SIGNAL_SNIPPET]
+
 
 def _load_schema() -> dict:
     if not _SCHEMA_FILE.exists():
@@ -98,9 +120,12 @@ def map_signals_to_skills(signals: dict, edits: list[dict] | None = None) -> lis
 
     Returns:
         [{"skill": str, "source": str, "signal": str,
-          "confidence": str, "evidence_count": int}, ...]
+          "confidence": str, "evidence_count": int, "snippet": str (error_signal only)}, ...]
         Duplicate skills are merged by accumulating evidence_count.
         confidence is auto-derived from accumulated evidence_count after merging.
+        CSR #1029: error_signal records also carry `snippet` (canonical matched error text) for
+        downstream error-token matching; correction_signal records have NO `snippet` key — consumers
+        must use rec.get("snippet", "").
     """
     mappings, thresholds = _load_mappings_and_thresholds()
     if not mappings:
@@ -139,6 +164,7 @@ def map_signals_to_skills(signals: dict, edits: list[dict] | None = None) -> lis
                     "source": "error_signal",
                     "signal": evidence_label,
                     "evidence_count": len(matched),
+                    "snippet": _canonical_snippet(matched),  # CSR #1029: revive dead branch
                     "_fallback_confidence": fallback_conf,
                 })
 
@@ -163,8 +189,24 @@ def map_signals_to_skills(signals: dict, edits: list[dict] | None = None) -> lis
 
 
 def _upsert(skill_map: dict, skill: str, rec: dict) -> None:
-    """Accumulate evidence_count if skill already exists, otherwise insert."""
+    """Accumulate evidence_count (and merge canonical snippet text) if skill already exists,
+    otherwise insert."""
     if skill in skill_map:
-        skill_map[skill]["evidence_count"] += rec["evidence_count"]
+        existing = skill_map[skill]
+        existing["evidence_count"] += rec["evidence_count"]
+        # CSR #1029: merge the incoming canonical snippet (value-deduped, length-capped) so the
+        # error_signal branch stays live when a skill is matched by more than one mapping.
+        # Reachable within the error path (e.g. systematic-debugging has 3 error mappings), but NOT
+        # across error/correction: only the error path sets `snippet`, and the error_keyword skills
+        # and the correction_count skills are disjoint in signal-skills.json — so this never attaches
+        # a snippet onto a record whose `source` is "correction_signal" (Gemini DA C1 unreachable,
+        # CSR #1029 da-chain). If a skill ever gains both trigger types, revisit source semantics.
+        new_snip = rec.get("snippet")
+        if new_snip:
+            cur = existing.get("snippet", "")
+            if not cur:
+                existing["snippet"] = new_snip
+            elif new_snip not in cur:
+                existing["snippet"] = (cur + "\n" + new_snip)[:_MAX_SIGNAL_SNIPPET]
     else:
         skill_map[skill] = rec
