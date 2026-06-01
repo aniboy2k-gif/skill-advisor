@@ -25,10 +25,10 @@
       "skill": "verification-before-completion",
       "trigger_pattern": "코드·기능 구현 완료 선언 전",
       "trigger_pattern_en": "before claiming completion",
-      "session_signals": ["conftest", "/tests/", "_test.", ".spec.", ".test.", "AssertionError", "--- FAIL", "failures", "failure", "test failed", "failed in", "failed,"],
+      "session_signals": ["conftest", "/tests/", "_test.", ".spec.", ".test.", "AssertionError", "--- FAIL", "failures:", "test failed", "Tests:"],
       "signal_match_targets": {
         "conftest": "file", "/tests/": "file", "_test.": "file", ".spec.": "file", ".test.": "file",
-        "AssertionError": "error", "--- FAIL": "error", "failures": "error", "failure": "error", "test failed": "error", "failed in": "error", "failed,": "error"
+        "AssertionError": "error", "--- FAIL": "error", "failures:": "error", "test failed": "error", "Tests:": "error"
       }
     },
     {

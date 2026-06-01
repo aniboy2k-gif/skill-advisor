@@ -76,16 +76,32 @@ def test_verification_triggers_on_each_runner_failure():
 # ---- criterion #3 + #4: non-test runtime failures must NOT inflate verification (FP budget) ----
 
 _NEGATIVE_FAILURES = [
+    # verb-form "failed"
     "Connection failed: ECONNREFUSED 127.0.0.1:5432",
     "Error: deploy failed after 3 retries",
     "npm ERR! build failed with exit code 1",
     "fatal: authentication failed for 'https://...'",
+    "request failed with status 500",
+    "Job failed: exit code 1",
+    "operation failed in module X",
+    "step failed, retrying",
+    # noun-form "failure"/"failures" — these regressed the original token set (FP 8/10);
+    # the bare 'failure'/'failures' (no colon) tokens were DROPPED for exactly these.
+    "authentication failure: invalid credentials",
+    "Service failure: HTTP 503 Unavailable",
+    "health check failure on node-3",
+    "DNS resolution failure for host",
+    "multiple failures detected in pipeline",
+    "Build step marked build as failure",
+    "kernel panic: fatal error out of memory",
 ]
 
 
 def test_negative_runtime_failures_fp_budget():
-    """criterion #4 (FP<=2): generic non-test runtime failures must not meaningfully activate
-    verification (ChatGPT M-1 — measure, don't assert)."""
+    """criterion #4 (FP<=2): generic non-test runtime failures — INCLUDING noun-form 'failure'/
+    'failures' — must not meaningfully activate verification. (ChatGPT M-1: measure, don't assert.
+    The deep-verification of CSR #1037 found the initial token set scored FP 8/10 on this corpus
+    because bare 'failure' matched infra errors; the tuned set keeps FP within budget.)"""
     fp = 0
     for snippet in _NEGATIVE_FAILURES:
         results, _ = build_hard_gate_candidates([], [], _veri_err_record(snippet), session_id=None)
