@@ -361,3 +361,77 @@ def test_load_ssot_tier_map_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     result = _load_ssot_tier_map()
     assert result == {}
+
+
+# ── CSR #971: check_session_coherence (P1-c) ─────────────────────────────────
+
+check_session_coherence = _mod.check_session_coherence
+
+_LIVE_UUID = "a1b2c3d4-1234-1234-1234-123456789abc"
+_OTHER_UUID = "ffffffff-1234-1234-1234-123456789abc"
+
+
+def test_coherence_session_id_direct_skipped(monkeypatch):
+    """session_id_direct is coherent by construction → no warning even if env differs."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _OTHER_UUID)
+    jsonl = Path(f"/x/{_LIVE_UUID}.jsonl")
+    assert check_session_coherence(jsonl, "session_id_direct") is None
+
+
+def test_coherence_live_env_unset_unverifiable(monkeypatch):
+    """No per-process live signal → unverifiable → None (no false alarm)."""
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    jsonl = Path(f"/x/{_LIVE_UUID}.jsonl")
+    assert check_session_coherence(jsonl, "find_jsonl") is None
+
+
+def test_coherence_mismatch_warns(monkeypatch):
+    """live env set + stem != live (fallback path) → warning emitted."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _LIVE_UUID)
+    jsonl = Path(f"/x/{_OTHER_UUID}.jsonl")
+    warn = check_session_coherence(jsonl, "find_jsonl")
+    assert warn is not None and "cross-session" in warn
+    assert _OTHER_UUID in warn and _LIVE_UUID in warn
+
+
+def test_coherence_explicit_path_also_checked(monkeypatch):
+    """H-1: --jsonl explicit path is also checked (highest-value once live trusted)."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _LIVE_UUID)
+    jsonl = Path(f"/x/{_OTHER_UUID}.jsonl")
+    assert check_session_coherence(jsonl, "explicit") is not None
+
+
+def test_coherence_match_no_warning(monkeypatch):
+    """stem == live → coherent → None."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _LIVE_UUID)
+    jsonl = Path(f"/x/{_LIVE_UUID}.jsonl")
+    assert check_session_coherence(jsonl, "find_jsonl") is None
+
+
+def test_coherence_non_uuid_stem_skipped(monkeypatch):
+    """Non-UUID stem (e.g. track1 temp file) → cannot compare → None (no noise)."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _LIVE_UUID)
+    jsonl = Path("/x/tmphv5km54w.jsonl")
+    assert check_session_coherence(jsonl, "track1") is None
+
+
+def test_coherence_invalid_live_uuid_skipped(monkeypatch):
+    """Live env present but not a valid UUID → unverifiable → None."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "not-a-uuid")
+    jsonl = Path(f"/x/{_LIVE_UUID}.jsonl")
+    assert check_session_coherence(jsonl, "find_jsonl") is None
+
+
+def test_coherence_C1_lock_never_reads_session_hint(monkeypatch):
+    """CSR #971 C-1 regression lock: even with env unset (the only path where
+    .session-hint would be reached), the function must NOT consult extract_session_id()
+    / the shared per-cwd .session-hint (the #965 contamination vector). Proven by
+    making extract_session_id raise — the function must still return None without error."""
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+    def _boom(*a, **k):
+        raise AssertionError("check_session_coherence must NOT call extract_session_id (C-1)")
+
+    monkeypatch.setattr(_mod, "extract_session_id", _boom)
+    jsonl = Path(f"/x/{_LIVE_UUID}.jsonl")
+    assert check_session_coherence(jsonl, "find_jsonl") is None  # no exception = C-1 held

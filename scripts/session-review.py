@@ -29,7 +29,7 @@ from jsonl_analyzer import AnalysisError, analyze_session_signals  # noqa: E402
 from signal_to_skill import map_signals_to_skills  # noqa: E402
 from hard_gate_parser import load_hard_gates  # noqa: E402
 from session_activity import extract_slash_commands  # noqa: E402
-from lib.session_id import extract_session_id  # noqa: E402
+from lib.session_id import extract_session_id, _is_valid_uuid  # noqa: E402
 
 _RETRO_SKILL_NAME = "session-retrospective"
 _RETRO_REPO_URL = "https://github.com/accidentalrebel/claude-skill-session-retrospective"
@@ -163,6 +163,42 @@ def find_jsonl(confirm: bool = False) -> Path | None:
     )
     for p in candidates[:5]:
         print(f"  - {p.name}", file=sys.stderr)
+    return None
+
+
+def check_session_coherence(jsonl: Path | None, jsonl_source: str) -> str | None:
+    """P1-c (CSR #971): defense-in-depth coherence check.
+
+    Warn when the chosen transcript may NOT belong to the live session — a tertiary
+    advisory net on top of #965 P1-a (session_id-direct resolution) + P1-b (fail-closed).
+    Returns a warning string, or None when coherent OR unverifiable (no false alarm).
+
+    Boundary (L-1, CSR #971 DA): this validates *selection coherence* (does the chosen
+    file's identity match the live session), NOT transcript content integrity.
+
+    The live signal is read DIRECTLY from the per-process env var CLAUDE_CODE_SESSION_ID,
+    NOT from extract_session_id() / _current_session_id (CSR #971 CRITICAL C-1): those
+    degrade to the shared per-cwd .session-hint — the exact cross-session contamination
+    vector #965 fixed — which would make the check certify coherence against the same
+    poisoned well (false silence), and a stem-derived live id would be tautological.
+    Per-process env absent/invalid -> return None (unverifiable; accepted residual gap).
+    """
+    # session_id_direct is coherent by construction (stem == resolved sid). Invariant:
+    # find_jsonl_by_session_id builds <cwd_hash>/<session_id>.jsonl, so stem IS the sid.
+    if jsonl_source == "session_id_direct":
+        return None
+    # Only the per-process env is a trustworthy, non-circular live oracle (C-1).
+    live = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    if not _is_valid_uuid(live):
+        return None  # unverifiable: no trustworthy live signal
+    stem = jsonl.stem if jsonl else ""
+    if not _is_valid_uuid(stem):
+        return None  # non-UUID stem (e.g. track1 temp file) -> cannot compare
+    if stem != live:
+        return (
+            f"⚠ selected transcript session_id {stem} != live session {live} "
+            "— possible cross-session pickup; use --jsonl to override (CSR #971)"
+        )
     return None
 
 
@@ -812,8 +848,16 @@ def main() -> int:
         _current_session_id = _resolved_sid
     else:
         _jsonl_stem = jsonl.stem if jsonl else ""
-        _session_id_from_jsonl = _jsonl_stem if (len(_jsonl_stem) > 30 and "-" in _jsonl_stem) else None
+        # CSR #971 H-2: single UUID predicate (strict _is_valid_uuid), not the loose
+        # len>30 heuristic — avoids minting a bogus session_id from a non-UUID stem.
+        _session_id_from_jsonl = _jsonl_stem if _is_valid_uuid(_jsonl_stem) else None
         _current_session_id = _session_id_from_jsonl or extract_session_id() or None
+
+    # P1-c (CSR #971): chosen-JSONL ↔ live-session coherence warning (defense-in-depth).
+    _coherence_warning = check_session_coherence(jsonl, _jsonl_source)
+    if _coherence_warning:
+        print(_coherence_warning, file=sys.stderr)
+
     hard_gate_candidates, gate_warnings = build_hard_gate_candidates(
         edits, slash_commands, error_signals, session_id=_current_session_id
     )
