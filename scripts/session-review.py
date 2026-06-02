@@ -6,6 +6,7 @@ Recommend related skills based on files edited in the current Claude Code sessio
 from __future__ import annotations
 
 import argparse
+import datetime
 import fnmatch
 import json
 import os
@@ -166,6 +167,37 @@ def find_jsonl(confirm: bool = False) -> Path | None:
     return None
 
 
+def _emit_coherence_mismatch_audit(stem: str, live: str, jsonl_source: str) -> None:
+    """Best-effort append-only audit emit for a coherence mismatch (CSR #1061, sparse).
+
+    Fail-open BY POLICY: ALL failures — non-zero exit from the helper, timeout, flock
+    contention, transport errors — are intentionally ignored. The reason is NOT that the
+    payload is valid by construction (json.dumps validity only guards serialization, a
+    different layer than subprocess execution success); it is that this audit is a
+    best-effort side-channel that must never alter the read-only diagnostic's behavior or
+    exit code (ChatGPT/Claude-Web DA, CSR #1061). Drops under lock contention are accepted
+    and NOT retried (hook-troubleshooting.md §4: restricted-write can fail silently).
+    """
+    try:
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        payload = json.dumps({
+            "event": "session_coherence_mismatch",
+            "producer": "session-review.py",
+            "schema_version": "1",
+            "stem": stem,
+            "live": live,
+            "jsonl_source": jsonl_source,
+            "ts": ts,
+        })
+        helper = Path.home() / ".claude" / "scripts" / "append-audit-event.sh"
+        subprocess.run(
+            [str(helper)], input=payload, text=True,
+            timeout=2, capture_output=True,
+        )
+    except Exception:
+        pass  # fail-open: see docstring
+
+
 def check_session_coherence(jsonl: Path | None, jsonl_source: str) -> str | None:
     """P1-c (CSR #971): defense-in-depth coherence check.
 
@@ -175,6 +207,11 @@ def check_session_coherence(jsonl: Path | None, jsonl_source: str) -> str | None
 
     Boundary (L-1, CSR #971 DA): this validates *selection coherence* (does the chosen
     file's identity match the live session), NOT transcript content integrity.
+
+    Side-channel (CSR #1061): on mismatch ONLY, emits one best-effort append-only audit
+    event (session_coherence_mismatch) via append-audit-event.sh. This does NOT mutate the
+    diagnosed session/transcript — the read-only contract is "no target mutation", not "no
+    writes anywhere". Emission is best-effort/fail-open (see _emit_coherence_mismatch_audit).
 
     The live signal is read DIRECTLY from the per-process env var CLAUDE_CODE_SESSION_ID,
     NOT from extract_session_id() / _current_session_id (CSR #971 CRITICAL C-1): those
@@ -195,6 +232,7 @@ def check_session_coherence(jsonl: Path | None, jsonl_source: str) -> str | None
     if not _is_valid_uuid(stem):
         return None  # non-UUID stem (e.g. track1 temp file) -> cannot compare
     if stem != live:
+        _emit_coherence_mismatch_audit(stem, live, jsonl_source)
         return (
             f"⚠ selected transcript session_id {stem} != live session {live} "
             "— possible cross-session pickup; use --jsonl to override (CSR #971)"

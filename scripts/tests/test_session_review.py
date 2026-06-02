@@ -5,6 +5,8 @@ Run: pytest scripts/tests/test_session_review.py -v
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -435,3 +437,91 @@ def test_coherence_C1_lock_never_reads_session_hint(monkeypatch):
     monkeypatch.setattr(_mod, "extract_session_id", _boom)
     jsonl = Path(f"/x/{_LIVE_UUID}.jsonl")
     assert check_session_coherence(jsonl, "find_jsonl") is None  # no exception = C-1 held
+
+
+# ── CSR #1061: _emit_coherence_mismatch_audit (sparse audit side-channel) ─────
+
+
+def _patch_subprocess_capture(monkeypatch):
+    """Capture subprocess.run calls (cmd, input=) into a list; return the list."""
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append({"cmd": cmd, "input": kwargs.get("input")})
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _R()
+
+    monkeypatch.setattr(_mod.subprocess, "run", _fake_run)
+    return calls
+
+
+def test_audit_emitted_on_mismatch_with_valid_payload(monkeypatch):
+    """CSR #1061 HIGH-1 (Claude Web DA): mismatch → exactly 1 emit AND the captured
+    payload round-trips to valid JSON with required fields. Locks the well-formed-payload
+    contract so a future refactor breaking json.dumps fails HERE instead of silently
+    emitting 0 rows (the fail-open + no-check silent-regression class)."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _LIVE_UUID)
+    calls = _patch_subprocess_capture(monkeypatch)
+    jsonl = Path(f"/x/{_OTHER_UUID}.jsonl")
+    warn = check_session_coherence(jsonl, "find_jsonl")
+    assert warn is not None  # diagnostic behavior unchanged
+    assert len(calls) == 1  # sparse: exactly one emit on mismatch
+    payload = json.loads(calls[0]["input"])  # round-trip: must be valid JSON
+    assert payload["event"] == "session_coherence_mismatch"
+    assert payload["producer"] == "session-review.py"
+    assert payload["schema_version"] == "1"
+    assert payload["stem"] == _OTHER_UUID
+    assert payload["live"] == _LIVE_UUID
+    assert payload["jsonl_source"] == "find_jsonl"
+    assert payload["ts"].endswith("Z")  # iso8601 UTC
+
+
+def test_audit_not_emitted_on_any_none_path(monkeypatch):
+    """CSR #1061 L2: all 4 None-returning paths emit 0 audit events — sparse contract
+    locked on EVERY branch (session_id_direct / unverifiable / non-UUID stem / coherent),
+    not just 'coherent'."""
+    calls = _patch_subprocess_capture(monkeypatch)
+    # 1. session_id_direct (early return None even if env differs)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _OTHER_UUID)
+    assert check_session_coherence(Path(f"/x/{_LIVE_UUID}.jsonl"), "session_id_direct") is None
+    # 2. unverifiable: live env unset
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    assert check_session_coherence(Path(f"/x/{_LIVE_UUID}.jsonl"), "find_jsonl") is None
+    # 3. non-UUID stem (track1 temp)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _LIVE_UUID)
+    assert check_session_coherence(Path("/x/tmphv5km54w.jsonl"), "track1") is None
+    # 4. coherent: stem == live
+    assert check_session_coherence(Path(f"/x/{_LIVE_UUID}.jsonl"), "find_jsonl") is None
+    assert len(calls) == 0  # zero emit on any None path
+
+
+def test_audit_failure_is_fail_open(monkeypatch):
+    """CSR #1061 HIGH-1/ChatGPT DA: a subprocess failure (timeout/OSError/non-zero) must
+    NOT raise and must NOT change the diagnostic's return — fail-open best-effort policy
+    (exit/return contract unchanged regardless of audit-path outcome, LOW-2)."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _LIVE_UUID)
+
+    def _boom_run(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="append-audit-event.sh", timeout=2)
+
+    monkeypatch.setattr(_mod.subprocess, "run", _boom_run)
+    jsonl = Path(f"/x/{_OTHER_UUID}.jsonl")
+    warn = check_session_coherence(jsonl, "find_jsonl")  # must not raise
+    assert warn is not None and "cross-session" in warn  # return contract intact
+
+
+def test_audit_emit_helper_swallows_oserror(monkeypatch):
+    """CSR #1061: _emit_coherence_mismatch_audit must be fail-open against OSError
+    (e.g. helper not found / not executable) — returns None, never raises."""
+
+    def _boom_run(*a, **k):
+        raise OSError("helper not found")
+
+    monkeypatch.setattr(_mod.subprocess, "run", _boom_run)
+    # direct call — must not raise
+    assert _mod._emit_coherence_mismatch_audit("a", "b", "find_jsonl") is None
