@@ -41,7 +41,8 @@
       "skill": "handoff-verify",
       "trigger_pattern": "서브에이전트 작업 완료 검증 시",
       "trigger_pattern_en": "sub-agent task completion verification",
-      "session_signals": ["subagent", "sub-agent", "agent completed", "서브에이전트"]
+      "session_signals": ["subagent", "sub-agent", "agent completed", "서브에이전트"],
+      "structured_signals": ["subagent_invoked"]
     },
     {
       "skill": "trader-task",
