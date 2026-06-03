@@ -20,6 +20,7 @@ _spec = importlib.util.spec_from_file_location("session_review_mod", _SCRIPTS / 
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 _signal_matches = _mod._signal_matches
+_token_has_non_ascii = _mod._token_has_non_ascii
 build_hard_gate_candidates = _mod.build_hard_gate_candidates
 
 
@@ -54,6 +55,15 @@ def _run_checks():
 
     # --- H1: non-ASCII token degenerates to substring under word mode (no tightening) ---
     chk(_signal_matches("서브에이전트", "나의서브에이전트", "word"), "word: non-ASCII degenerates to substring (H1)")
+
+    # --- M4: mixed-script tokens (real gate tokens: 'AI 게시판', '가이드 본문') ---
+    chk(_token_has_non_ascii("AI 게시판"), "M4: 'AI 게시판' flagged non-ASCII (warns on word opt-in)")
+    chk(_token_has_non_ascii("가이드 본문"), "M4: '가이드 본문' flagged non-ASCII")
+    chk(not _token_has_non_ascii("agent completed"), "M4: ASCII-with-space token NOT flagged")
+    chk(_signal_matches("AI 게시판", "나의 AI 게시판 글", "word"), "M4 word: mixed-script 'AI 게시판' matches in phrase (Korean boundary hybrid)")
+    chk(_signal_matches("AI 게시판", "my AI 게시판 x", "substring"), "M4 substring default: space token byte-identical (no regression)")
+    chk(_signal_matches("agent completed", "the agent completed now", "word"), "M4 word: ASCII space-token 'agent completed' phrase match")
+    chk(not _signal_matches("agent completed", "agent completedx", "word"), "M4 word: 'agent completed' rejects suffix concat")
 
     # --- unknown mode → treated as substring by the helper ---
     chk(_signal_matches("auth", "author.py", "banana"), "unknown mode → substring fallback")
