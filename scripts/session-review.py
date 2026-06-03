@@ -10,6 +10,7 @@ import datetime
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -575,6 +576,31 @@ STRUCTURED_SIGNAL_HANDLERS = {
 }
 
 
+# CSR #1093: per-token signal_match_mode (substring | word). Sibling to signal_match_targets
+# (#1037). "substring" is the default → byte-identical to pre-#1093 behavior. "word" wraps the token
+# in ASCII-identifier boundaries to drop concatenation FPs (auth↛author). Honest limits (DA-grounded):
+#  - underscore is an identifier char → "word" will NOT match auth in "auth_token" (intended FN tradeoff).
+#  - boundary class is ASCII-only → any non-ASCII (Korean/CJK) token degenerates to substring (no
+#    tightening); the caller warns once per gate when such a token opts into "word".
+#  - delimiter-adjacent FPs are NOT fixed by "word" (ARIA still matches "aria-label"; "-" is a boundary).
+_WORD_LB = r"(?<![A-Za-z0-9_])"
+_WORD_LA = r"(?![A-Za-z0-9_])"
+
+
+def _token_has_non_ascii(token: str) -> bool:
+    """True if any char is outside ASCII — such tokens get no tightening from "word" mode."""
+    return any(ord(ch) > 127 for ch in token)
+
+
+def _signal_matches(token: str, text: str, mode: str) -> bool:
+    """Match `token` against `text` per mode. Default "substring" = case-insensitive containment
+    (identical to the pre-#1093 `token.lower() in text.lower()`). "word" adds ASCII-identifier
+    boundaries via lookbehind/lookahead. Any mode other than "word" is treated as substring."""
+    if mode == "word":
+        return re.search(_WORD_LB + re.escape(token) + _WORD_LA, text, re.IGNORECASE) is not None
+    return token.lower() in text.lower()
+
+
 def build_hard_gate_candidates(
     edits: list[dict],
     slash_commands: list[str],
@@ -653,12 +679,36 @@ def build_hard_gate_candidates(
         # OUTCOME tokens (AssertionError, --- FAIL, ...) are error-only (criterion #2 via failure
         # outcome, not path presence).
         match_targets = gate.get("signal_match_targets", {})
+        # CSR #1093: per-token match mode (substring | word). Keys are the RAW case-sensitive token,
+        # identical to signal_match_targets (case is handled by re.IGNORECASE, never by lowercasing
+        # the key). Config warnings are emitted ONCE per gate here (not per match attempt).
+        mode_map = gate.get("signal_match_mode", {})
+        if mode_map:
+            _sigset = set(gate.get("session_signals", []))
+            for _mk, _mv in mode_map.items():
+                if _mk not in _sigset:
+                    warnings.append(
+                        f"gate '{skill}' signal_match_mode key '{_mk}' is not in session_signals "
+                        f"(orphaned — token renamed? entry falls back to substring)"
+                    )
+                if _mv not in ("substring", "word"):
+                    warnings.append(
+                        f"gate '{skill}' signal_match_mode['{_mk}']='{_mv}' is an unknown mode "
+                        f"(treated as substring)"
+                    )
+                elif _mv == "word" and _token_has_non_ascii(_mk):
+                    warnings.append(
+                        f"gate '{skill}' signal_match_mode['{_mk}']='word' but the token is non-ASCII "
+                        f"(ASCII-only boundary → degenerates to substring; no tightening)"
+                    )
         for sig in gate.get("session_signals", []):
-            sig_lower = sig.lower()
             target = match_targets.get(sig, "both")
+            mode = mode_map.get(sig, "substring")
+            if mode not in ("substring", "word"):
+                mode = "substring"  # unknown mode → substring (warned once per gate above)
             if target in ("file", "both"):
                 for edit in edits:
-                    if sig_lower in edit["file"].lower():
+                    if _signal_matches(sig, edit["file"], mode):
                         name = Path(edit["file"]).name
                         if f"file:{name}" not in triggered_by:
                             triggered_by.append(f"file:{name}")
@@ -666,7 +716,7 @@ def build_hard_gate_candidates(
             if target in ("error", "both"):
                 for err in error_signals:
                     snippet = err.get("snippet", "")
-                    if sig_lower in snippet.lower():
+                    if _signal_matches(sig, snippet, mode):
                         label = f"error:{sig}"
                         if label not in triggered_by:
                             triggered_by.append(label)
