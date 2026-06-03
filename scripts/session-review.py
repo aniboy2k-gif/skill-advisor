@@ -439,11 +439,38 @@ def _load_ssot_tier_map() -> dict[str, str]:
         return {}
 
 
+# CSR #1030: structured-signal channel — a detection axis ORTHOGONAL to the text
+# session_signals (which match file paths / error snippets). A structured signal is a
+# ground-truth JSONL event presence (e.g. a subagent tool_use), not a text token. Each
+# handler takes the structured context and returns a list of triggered_by labels (empty =
+# not triggered). The dispatch map keeps this extensible — a sibling gate (e.g. CSR #1039
+# completion_context) registers a new handler with zero changes to the per-gate loop.
+def _detect_subagent_invoked(ctx: dict) -> list[str]:
+    """handoff-verify 구조화 신호: 세션에서 서브에이전트(Agent/Task)가 실행됐는가.
+
+    triggered_by 라벨에 distinct subagent_type 을 박제 (투명성 — da-chain Gemini Q3 /
+    Claude Web). type 미상이면 일반 'subagent:Agent' 라벨로 표기.
+    """
+    if ctx.get("subagent_count", 0) <= 0:
+        return []
+    types = ctx.get("subagent_types", [])
+    if not types:
+        return ["subagent:Agent"]
+    return [f"subagent:{t or 'Agent'}" for t in types]
+
+
+# signal token -> handler(ctx) -> list[str] (triggered_by labels)
+STRUCTURED_SIGNAL_HANDLERS = {
+    "subagent_invoked": _detect_subagent_invoked,
+}
+
+
 def build_hard_gate_candidates(
     edits: list[dict],
     slash_commands: list[str],
     error_signals: list[dict],
     session_id: str | None = None,
+    subagent_invocations: list[dict] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Hard Gate 트리거 후보 탐지 (CSR #825 schema_version 2).
 
@@ -464,6 +491,17 @@ def build_hard_gate_candidates(
     gates, warnings = load_hard_gates()
     ssot_tier_map = _load_ssot_tier_map()
     invoked = {cmd.lstrip("/") for cmd in slash_commands}
+
+    # CSR #1030: structured-signal context (subagent presence). Count is session-wide and
+    # uncapped (jsonl_analyzer full-scan); distinct types are deduped, order-preserved.
+    _subagent_invs = subagent_invocations or []
+    _subagent_count = len(_subagent_invs)
+    _subagent_types: list[str] = []
+    for _inv in _subagent_invs:
+        _t = _inv.get("subagent_type", "")
+        if _t and _t not in _subagent_types:
+            _subagent_types.append(_t)
+    struct_ctx = {"subagent_count": _subagent_count, "subagent_types": _subagent_types}
 
     # gate-artifacts 디렉토리에서 .done 마커 확인 (JSONL 기반 — stale 마커 방지)
     _gate_dir = Path.home() / ".claude" / "gate-artifacts"
@@ -515,6 +553,20 @@ def build_hard_gate_candidates(
                             triggered_by.append(label)
                         break
 
+        # CSR #1030: structured-signal channel (orthogonal to text session_signals).
+        # Unknown declared signals warn (no silent gate disable — da-chain ChatGPT M-1).
+        for sig in gate.get("structured_signals", []):
+            handler = STRUCTURED_SIGNAL_HANDLERS.get(sig)
+            if handler is None:
+                warnings.append(
+                    f"gate '{skill}' declares unknown structured_signal '{sig}' "
+                    f"(no registered handler)"
+                )
+                continue
+            for label in handler(struct_ctx):
+                if label not in triggered_by:
+                    triggered_by.append(label)
+
         # v2 detected (4 string status — CSR #825 C-A1 회피, triggered_by 비어있지 않으면 격상)
         if slash_matched:
             detected_v2 = "executed"
@@ -535,6 +587,9 @@ def build_hard_gate_candidates(
             "triggered_by": triggered_by[:3],
             "detection_basis": detection_basis,
             "schema_version": 2,
+            # CSR #1030: session-wide subagent count (audit — "N subagents delegated,
+            # handoff-verify not run"). Only meaningful for gates with structured_signals.
+            "subagent_count": _subagent_count,
         })
     return results, warnings
 
@@ -870,9 +925,12 @@ def main() -> int:
     # 시그널 분석 (두 트랙 공통)
     # CSR #812: edits 전달로 domain_globs 컨텍스트 매칭 활성화 (build-fix false positive 방지)
     signal_recs: list = []
+    _subagent_invocations: list = []
     try:
         signals = analyze_session_signals(jsonl, max_events=args.max_edits)
         signal_recs = map_signals_to_skills(signals, edits=edits)
+        # CSR #1030: structured subagent signal (uncapped full-scan) for handoff-verify.
+        _subagent_invocations = signals.get("subagent_invocations", [])
     except Exception as e:
         print(f"[WARN] skill-advisor: signal analysis failed — {e}", file=sys.stderr)
 
@@ -897,7 +955,8 @@ def main() -> int:
         print(_coherence_warning, file=sys.stderr)
 
     hard_gate_candidates, gate_warnings = build_hard_gate_candidates(
-        edits, slash_commands, error_signals, session_id=_current_session_id
+        edits, slash_commands, error_signals, session_id=_current_session_id,
+        subagent_invocations=_subagent_invocations,
     )
 
     if args.json_out:

@@ -22,9 +22,52 @@ _NEGATION_KW = frozenset([
 # 오류 스니펫 최대 길이
 _MAX_SNIPPET = 300
 
+# CSR #1030: subagent invocation tool names. "Task" was renamed to "Agent" in
+# Claude Code v2.1.63; both are matched for backward compatibility (official
+# Anthropic subagents doc + local measurement: 541 "Agent" events, 0 "Task").
+_SUBAGENT_TOOL_NAMES = frozenset(["Agent", "Task"])
+
 
 class AnalysisError(Exception):
     """JSONL 파일 접근 또는 스키마 검증 실패."""
+
+
+def _extract_subagent_invocations(lines: list[str]) -> list[dict]:
+    """tool_use 블록 중 name in {Agent, Task} 를 전체 스캔으로 수집한다 (CSR #1030).
+
+    handoff-verify (★B) 의 진짜 신호 = "서브에이전트가 실행됨" 이며, 이는 파일 경로도
+    에러 스니펫도 아닌 구조화 JSONL tool_use 이벤트다. 따라서 텍스트 substring 매칭으로는
+    잡을 수 없어 전용 구조화 신호로 추출한다.
+
+    - **uncapped**: analyze_session_signals 의 max_events 캡과 독립 — 긴 세션의 최근
+      서브에이전트를 silent miss 하지 않는다 (da-chain Gemini CRITICAL / Claude Web M3).
+    - **isSidechain 제외**: top-level isSidechain 이 True 인 라인(서브에이전트 자체 내부
+      컨텍스트)은 중복 카운트 방지를 위해 제외한다 (da-chain Claude Web H1, 실제 필드).
+    - line_index = 파일 절대 라인 인덱스 (truncation 없음 — da-chain ChatGPT L-1).
+
+    Returns: [{"subagent_type": str, "line_index": int}, ...]
+    """
+    invocations: list[dict] = []
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if d.get("isSidechain") is True:
+            continue
+        content = d.get("message", {}).get("content") or []
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict) or c.get("type") != "tool_use":
+                continue
+            if c.get("name") in _SUBAGENT_TOOL_NAMES:
+                inp = c.get("input", {})
+                stype = inp.get("subagent_type", "") if isinstance(inp, dict) else ""
+                invocations.append({"subagent_type": stype, "line_index": i})
+    return invocations
 
 
 def analyze_session_signals(
@@ -38,7 +81,9 @@ def analyze_session_signals(
         {
           "errors": [{"error_snippet": str, "line_index": int}, ...],
           "corrections": [{"user_message": str, "line_index": int}, ...],
-          "stats": {"total_errors": int, "total_corrections": int},
+          "subagent_invocations": [{"subagent_type": str, "line_index": int}, ...],
+          "stats": {"total_errors": int, "total_corrections": int,
+                    "total_subagent_invocations": int},
         }
     Raises:
         AnalysisError: 파일 없음 또는 치명적 파싱 실패
@@ -56,7 +101,13 @@ def analyze_session_signals(
         raise AnalysisError(f"JSONL 읽기 실패: {e}") from e
 
     if not lines:
-        return {"errors": [], "corrections": [], "stats": {"total_errors": 0, "total_corrections": 0}}
+        return {
+            "errors": [], "corrections": [], "subagent_invocations": [],
+            "stats": {"total_errors": 0, "total_corrections": 0, "total_subagent_invocations": 0},
+        }
+
+    # CSR #1030: subagent 추출은 max_events 캡과 독립한 전체 스캔 (이미 읽은 lines 재사용).
+    subagent_invocations = _extract_subagent_invocations(lines)
 
     processed = 0
     for i, line in enumerate(lines):
@@ -105,9 +156,11 @@ def analyze_session_signals(
     return {
         "errors": errors,
         "corrections": corrections,
+        "subagent_invocations": subagent_invocations,
         "stats": {
             "total_errors": len(errors),
             "total_corrections": len(corrections),
+            "total_subagent_invocations": len(subagent_invocations),
         },
     }
 
