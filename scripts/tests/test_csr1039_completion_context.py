@@ -144,6 +144,41 @@ def test_apply_gate_is_pure_no_mutation():
     assert suppressed == ["error:AssertionError"]
 
 
+def test_bare_completion_context_is_not_an_independent_trigger():
+    """REGRESSION (deep-verify): completion_context is a transparency companion, NOT a standalone
+    trigger. A completion claim with NO test signal (no error:, no file:) must NOT fire the gate —
+    otherwise virtually every completion-claiming session would flag verification (precision
+    regression, outside the #1039 DoD failure-OUTCOME scope)."""
+    results, _ = build_hard_gate_candidates(
+        [], [], [], session_id="sid", completion_context_state="present",
+    )
+    g = _gate(results, VBC)
+    assert g is not None
+    assert g["detected"] == "miss", g
+    assert "completion_context" not in g["triggered_by"], g
+
+
+def test_completion_context_kept_as_companion_to_file_trigger():
+    """A real trigger (file: test-file edit) + completion present → fires, and completion_context
+    rides along as transparency."""
+    results, _ = build_hard_gate_candidates(
+        [{"file": "/proj/tests/conftest.py", "tool": "Edit"}], [], [],
+        session_id="sid", completion_context_state="present",
+    )
+    g = _gate(results, VBC)
+    assert g is not None and g["detected"] == "triggered", g
+
+
+def test_apply_gate_drops_sole_completion_label(monkeypatch):
+    """Unit: post-pass drops a bare completion_context label (sole) but keeps it as a companion."""
+    gate = {"require_completion_context": True}
+    sole, _ = _apply_completion_context_gate(["completion_context"], gate, True)
+    assert sole == []  # sole completion_context → not a trigger
+    companion, _ = _apply_completion_context_gate(
+        ["error:AssertionError", "completion_context"], gate, True)
+    assert companion == ["error:AssertionError", "completion_context"]  # companion retained
+
+
 def test_apply_gate_noop_without_require_field():
     """Gates without require_completion_context are unaffected (backward-compat)."""
     kept, suppressed = _apply_completion_context_gate(

@@ -545,12 +545,27 @@ def _apply_completion_context_gate(
 
     Returns (new_triggered_by, suppressed_signals). `file:` labels are intentionally left untouched
     (surgical scope — editing a test file remains an independent trigger, consistent with CSR #1027).
+
+    The `completion_context` label is TRANSPARENCY ONLY — a companion to a real trigger (error: or
+    file:), NEVER an independent trigger. A bare completion claim with no test signal must NOT fire
+    the gate (that would flag verification on virtually every completion-claiming session — a
+    precision regression and outside the #1039 DoD, which scopes to the failure-OUTCOME class).
     """
-    if not gate.get("require_completion_context") or completion_context_present:
+    if not gate.get("require_completion_context"):
         return list(triggered_by), []
-    kept = [t for t in triggered_by if not t.startswith("error:")]
-    suppressed = [t for t in triggered_by if t.startswith("error:")]
-    return kept, suppressed
+    if not completion_context_present:
+        # DoD #3: strip failure-OUTCOME triggers (no completion declared). Also drop any bare
+        # completion_context label (defensive — handler emits it only when present, but be safe).
+        kept = [t for t in triggered_by
+                if not t.startswith("error:") and t != "completion_context"]
+        suppressed = [t for t in triggered_by if t.startswith("error:")]
+        return kept, suppressed
+    # present: keep failure-OUTCOME triggers (DoD #2). completion_context is transparency-only —
+    # retain it only as a companion to a real trigger; drop it if it would be the SOLE trigger.
+    real_triggers = [t for t in triggered_by if t != "completion_context"]
+    if real_triggers:
+        return list(triggered_by), []
+    return [], []
 
 
 # signal token -> handler(ctx) -> list[str] (triggered_by labels)
