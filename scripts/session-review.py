@@ -459,9 +459,104 @@ def _detect_subagent_invoked(ctx: dict) -> list[str]:
     return [f"subagent:{t or 'Agent'}" for t in types]
 
 
+# CSR #1039: completion-context structured signal for verification-before-completion.
+# TAXONOMY OWNERSHIP (ChatGPT DA M3): this consumer constant MUST track the set of completion
+# events emitted by the PRODUCER hook `~/.claude/hooks/completion-claim-detector.sh`. If that hook
+# adds a new completion-claim event, this constant must be updated or recall silently degrades.
+# test_completion_claim_events_pinned guards the known names. The hook emits one of these only AFTER
+# it detects a completion declaration (COMPLETION_PATTERNS) that survives its negative filter — so
+# presence of any such event for a session is a producer-attached structured signal that a completion
+# was declared. NO assistant-text matching here (avoids CSR #1027 substring false positives).
+COMPLETION_CLAIM_EVENTS = frozenset([
+    "completion_claim_detected",
+    "completion_coverage_gap",
+    "completion_claim_skipped_evidence_present",
+    "completion_coverage_gap_unclassified_no_marker",
+    "completion_claim_coverage_satisfied",
+    "completion_claim_blocked",
+    "completion_claim_detected_skip_override",
+    "completion_claim_coverage_satisfied_unclassified_minmarker",
+])
+
+
+def _detect_completion_context_state(session_id: str | None) -> str:
+    """CSR #1039: did the hook record a completion claim for this session?
+
+    Returns one of (ChatGPT DA H2 — distinct operational states, NOT a collapsed bool):
+        "present"          : a COMPLETION_CLAIM_EVENTS event for session_id exists in the audit log
+        "absent"           : full scan found no matching event
+        "audit_missing"    : the audit log file does not exist
+        "audit_unreadable" : the audit log could not be read (permission/OS error)
+
+    This is a PRESENCE-ONLY boolean-grade API (ChatGPT DA M4) — it early-returns on the first match
+    and intentionally does NOT compute first/last/count/proximity. Temporal-proximity correlation
+    (the M2 residual) would need a different API; do not overload this one.
+
+    Reads `~/.claude/da-tools/hard-gate-audit.jsonl` line by line with a PER-LINE parse guard
+    (Claude Web DA M3): malformed/torn lines (the restricted-write torn-last-line norm + concurrent
+    appends) are SKIPPED, not fatal — scanning continues. Only a missing/unreadable file yields a
+    non-scan state.
+    """
+    if not session_id:
+        return "absent"
+    audit_path = Path.home() / ".claude" / "da-tools" / "hard-gate-audit.jsonl"
+    if not audit_path.exists():
+        return "audit_missing"
+    try:
+        with audit_path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue  # torn/concurrent-append line — skip, keep scanning
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("session_id") == session_id and rec.get("event") in COMPLETION_CLAIM_EVENTS:
+                    return "present"
+    except (PermissionError, OSError):
+        return "audit_unreadable"
+    return "absent"
+
+
+def _detect_completion_context(ctx: dict) -> list[str]:
+    """CSR #1039 structured-signal handler — PURE ADDITIVE detector (Claude Web DA H1).
+
+    Obeys the #1030 dispatch contract exactly: returns labels to APPEND, never strips. The actual
+    AND-gating (stripping error: outcomes when no completion context) lives in the separate post-pass
+    `_apply_completion_context_gate`, so the dispatch map stays additive/monotonic.
+    """
+    return ["completion_context"] if ctx.get("completion_context_present") else []
+
+
+def _apply_completion_context_gate(
+    triggered_by: list[str], gate: dict, completion_context_present: bool
+) -> tuple[list[str], list[str]]:
+    """CSR #1039 AND-combination post-pass — PURE (returns NEW lists, no in-place mutation —
+    coding-style immutability rule, Claude Web DA L2).
+
+    For a gate declaring `require_completion_context: true`, a failure-OUTCOME trigger (an `error:`
+    label) only "counts" when a completion was actually declared in the session. When the completion
+    context is absent, the `error:` labels are stripped so the gate does not fire on pure-debugging
+    failures (DoD #3). When present, they are kept (DoD #2) and the dispatch loop's appended
+    `completion_context` label provides transparency.
+
+    Returns (new_triggered_by, suppressed_signals). `file:` labels are intentionally left untouched
+    (surgical scope — editing a test file remains an independent trigger, consistent with CSR #1027).
+    """
+    if not gate.get("require_completion_context") or completion_context_present:
+        return list(triggered_by), []
+    kept = [t for t in triggered_by if not t.startswith("error:")]
+    suppressed = [t for t in triggered_by if t.startswith("error:")]
+    return kept, suppressed
+
+
 # signal token -> handler(ctx) -> list[str] (triggered_by labels)
 STRUCTURED_SIGNAL_HANDLERS = {
     "subagent_invoked": _detect_subagent_invoked,
+    "completion_context": _detect_completion_context,
 }
 
 
@@ -471,6 +566,7 @@ def build_hard_gate_candidates(
     error_signals: list[dict],
     session_id: str | None = None,
     subagent_invocations: list[dict] | None = None,
+    completion_context_state: str = "absent",
 ) -> tuple[list[dict], list[str]]:
     """Hard Gate 트리거 후보 탐지 (CSR #825 schema_version 2).
 
@@ -501,7 +597,15 @@ def build_hard_gate_candidates(
         _t = _inv.get("subagent_type", "")
         if _t and _t not in _subagent_types:
             _subagent_types.append(_t)
-    struct_ctx = {"subagent_count": _subagent_count, "subagent_types": _subagent_types}
+    # CSR #1039: completion-context presence (producer-attached, from hard-gate-audit.jsonl).
+    # All non-"present" states (absent / audit_missing / audit_unreadable) gate as absent —
+    # fail-toward-absent (conservative for an advisory: prefer a false negative over a false alarm).
+    _completion_context_present = completion_context_state == "present"
+    struct_ctx = {
+        "subagent_count": _subagent_count,
+        "subagent_types": _subagent_types,
+        "completion_context_present": _completion_context_present,
+    }
 
     # gate-artifacts 디렉토리에서 .done 마커 확인 (JSONL 기반 — stale 마커 방지)
     _gate_dir = Path.home() / ".claude" / "gate-artifacts"
@@ -567,6 +671,13 @@ def build_hard_gate_candidates(
                 if label not in triggered_by:
                     triggered_by.append(label)
 
+        # CSR #1039: AND-combination post-pass (runs BEFORE detected_v2 so a stripped gate demotes
+        # to "miss"). For a gate requiring completion context, error: outcome triggers only count
+        # when a completion was declared (DoD #3 strip / DoD #2 keep). Pure; file: untouched.
+        triggered_by, _suppressed_signals = _apply_completion_context_gate(
+            triggered_by, gate, _completion_context_present
+        )
+
         # v2 detected (4 string status — CSR #825 C-A1 회피, triggered_by 비어있지 않으면 격상)
         if slash_matched:
             detected_v2 = "executed"
@@ -590,6 +701,12 @@ def build_hard_gate_candidates(
             # CSR #1030: session-wide subagent count (audit — "N subagents delegated,
             # handoff-verify not run"). Only meaningful for gates with structured_signals.
             "subagent_count": _subagent_count,
+            # CSR #1039: completion-context observability (ChatGPT DA H2 — distinguish
+            # "no failure" from "suppressed (no completion claim)" from "audit infra failed").
+            # state ∈ {present, absent, audit_missing, audit_unreadable}; suppressed_signals lists
+            # the error: outcome labels stripped by the require_completion_context gate.
+            "completion_context_state": completion_context_state,
+            "suppressed_signals": _suppressed_signals,
         })
     return results, warnings
 
@@ -954,9 +1071,12 @@ def main() -> int:
     if _coherence_warning:
         print(_coherence_warning, file=sys.stderr)
 
+    # CSR #1039: producer-attached completion-context state (hard-gate-audit.jsonl, SID-filtered).
+    _completion_context_state = _detect_completion_context_state(_current_session_id)
     hard_gate_candidates, gate_warnings = build_hard_gate_candidates(
         edits, slash_commands, error_signals, session_id=_current_session_id,
         subagent_invocations=_subagent_invocations,
+        completion_context_state=_completion_context_state,
     )
 
     if args.json_out:

@@ -145,7 +145,13 @@ def test_verification_triggers_on_test_failure_session_functional():
         "confidence": "medium",
         "snippet": "FAILED /proj/tests/test_foo.py::test_bar - AssertionError",
     }]
-    results, _ = build_hard_gate_candidates([], [], error_signals, session_id=None)
+    # CSR #1039: the gate now requires completion context. A test-failure OUTCOME fires the gate
+    # ONLY when a completion was declared (criterion #2). The functional contract ("completion-context
+    # test failure fires") is preserved by passing completion_context_state="present"; the new
+    # criterion #3 (failure WITHOUT completion does NOT fire) is covered in test_csr1039.
+    results, _ = build_hard_gate_candidates(
+        [], [], error_signals, session_id=None, completion_context_state="present"
+    )
     g = _gate(results, "verification-before-completion")
     assert g is not None
     assert g["detected"] == "triggered", g  # functional contract, mechanism-agnostic

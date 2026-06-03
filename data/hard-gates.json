@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "last_updated": "2026-06-02",
-  "description": "Standard Hard Gates from CLAUDE.md skill trigger table. schema_version 1.1 (CSR #1037): optional per-gate `signal_match_targets` sibling object maps a session_signal token to its match scope (file|error|both). Tokens absent from the map (and gates without the field) default to 'both' — fully backward-compatible with 1.0.",
+  "schema_version": "1.2",
+  "last_updated": "2026-06-04",
+  "description": "Standard Hard Gates from CLAUDE.md skill trigger table. schema_version 1.1 (CSR #1037): optional per-gate `signal_match_targets` sibling object maps a session_signal token to its match scope (file|error|both); tokens absent (and gates without the field) default to 'both'. schema_version 1.2 (CSR #1039): optional per-gate `require_completion_context` boolean — when true, the gate's error-OUTCOME triggers only count when a producer-attached completion-context structured signal (`structured_signals: [\"completion_context\"]`, sourced from hard-gate-audit.jsonl completion-claim events) is present for the session; otherwise the error: labels are stripped (pure-debugging failures do not fire). Gates without the field are unaffected — fully backward-compatible with 1.0/1.1.",
   "gates": [
     {
       "skill": "systematic-debugging",
@@ -29,7 +29,9 @@
       "signal_match_targets": {
         "conftest": "file", "/tests/": "file", "_test.": "file", ".spec.": "file", ".test.": "file",
         "AssertionError": "error", "--- FAIL": "error", "Failure/Error": "error", "test result: FAILED": "error", "expect(received": "error", "test failed": "error"
-      }
+      },
+      "structured_signals": ["completion_context"],
+      "require_completion_context": true
     },
     {
       "skill": "vercel-react-best-practices",

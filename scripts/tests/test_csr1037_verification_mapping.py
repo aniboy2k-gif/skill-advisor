@@ -67,8 +67,12 @@ _RUNNER_FAILURES = {
 def test_verification_triggers_on_each_runner_failure():
     """criterion #2 (recall): every mainstream runner's failure output flips verification to
     'triggered' via its OWN error record — NOT via a borrowed /tests/ path token."""
+    # CSR #1039: the gate now requires completion context. criterion #2 ("a completion-context
+    # test failure fires") is preserved by passing completion_context_state="present"; failure
+    # WITHOUT completion context (criterion #3) is covered in test_csr1039_completion_context.
     for runner, snippet in _RUNNER_FAILURES.items():
-        results, _ = build_hard_gate_candidates([], [], _veri_err_record(snippet), session_id=None)
+        results, _ = build_hard_gate_candidates(
+            [], [], _veri_err_record(snippet), session_id=None, completion_context_state="present")
         g = _gate(results, VERI)
         assert g is not None, runner
         assert g["detected"] == "triggered", f"{runner} did not trigger verification: {g}"
@@ -137,8 +141,10 @@ def test_tests_path_in_error_text_no_longer_fires_without_failure():
 def test_verification_independence_own_record_only():
     """L2: with the ONLY error_signal record being verification's, the gate triggers from its OWN
     record (not incidental on a foreign skill's snippet)."""
+    # CSR #1039: completion context required — present to preserve the criterion #2 intent.
     results, _ = build_hard_gate_candidates(
-        [], [], _veri_err_record("AssertionError: boom"), session_id=None)
+        [], [], _veri_err_record("AssertionError: boom"), session_id=None,
+        completion_context_state="present")
     g = _gate(results, VERI)
     assert g is not None and g["detected"] == "triggered", g
 
@@ -153,7 +159,10 @@ def test_co_activation_verification_and_systematic_is_true_positive():
         "skill": VERI, "source": "error_signal", "signal": "x", "evidence_count": 1,
         "confidence": "medium", "snippet": "AssertionError: assert 1 == 2\n1 failed in 0.1s",
     }]
-    results, _ = build_hard_gate_candidates([], [], err, session_id=None)
+    # CSR #1039: verification requires completion context (present here); systematic-debugging has
+    # no require_completion_context and is unaffected — the TRUE co-activation still holds.
+    results, _ = build_hard_gate_candidates(
+        [], [], err, session_id=None, completion_context_state="present")
     gv = _gate(results, VERI)
     gs = _gate(results, "systematic-debugging")
     assert gv is not None and gv["detected"] == "triggered", gv
