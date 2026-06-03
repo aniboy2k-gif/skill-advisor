@@ -583,6 +583,9 @@ STRUCTURED_SIGNAL_HANDLERS = {
 #  - boundary class is ASCII-only → any non-ASCII (Korean/CJK) token degenerates to substring (no
 #    tightening); the caller warns once per gate when such a token opts into "word".
 #  - delimiter-adjacent FPs are NOT fixed by "word" (ARIA still matches "aria-label"; "-" is a boundary).
+# Evolution path (CSR #1093 M3, ChatGPT DA): only "substring" (default) and "word" are foreseen;
+# further modes (Unicode-aware boundary, path-segment) are deferred (YAGNI) — no strategy-pattern
+# indirection until a concrete need arises. Unknown modes already fall back to substring + warn.
 _WORD_LB = r"(?<![A-Za-z0-9_])"
 _WORD_LA = r"(?![A-Za-z0-9_])"
 
