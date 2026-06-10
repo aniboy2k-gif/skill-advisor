@@ -283,3 +283,27 @@ def test_m2_session_granularity_residual_documented():
     g = _gate(results, VBC)
     # By design this FIRES even if the completion claim was unrelated to the failure (residual).
     assert g is not None and g["detected"] == "triggered", g
+    # CSR #1097: the same coarse fire emits the session_coarse observability marker — the evidence
+    # that makes the proximity re-eval deferral fireable (NOT the proximity API itself).
+    assert g["completion_context_proximity"] == "session_coarse", g
+
+
+def test_csr1097_marker_none_when_no_error_outcome():
+    """CSR #1097: the session_coarse marker is None when there is no error: outcome, even with
+    completion-context present. Only coarse FIRES (require_completion_context + present + error:)
+    are counted, never all present states — guards the marker against over-firing."""
+    results, _ = build_hard_gate_candidates(
+        [], [], [], session_id="sid", completion_context_state="present",
+    )
+    g = _gate(results, VBC)
+    assert g["completion_context_proximity"] is None, g
+
+
+def test_csr1097_marker_none_when_completion_absent():
+    """CSR #1097: marker is None when completion-context is absent (the require_completion_context
+    gate already strips the error: outcome, so no coarse fire occurs)."""
+    results, _ = build_hard_gate_candidates(
+        [], [], _failure_error_signal(), session_id="sid", completion_context_state="absent",
+    )
+    g = _gate(results, VBC)
+    assert g["completion_context_proximity"] is None, g
