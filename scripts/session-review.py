@@ -756,6 +756,24 @@ def build_hard_gate_candidates(
         else:
             detected_v2 = "miss"
 
+        # CSR #1097: M2 session-coarse observability marker — makes the deferral re-eval
+        # evidence-fireable (Claude Web/ChatGPT DA, da-chain Tier 2 Conditional Y 2026-06-11).
+        # A require_completion_context gate that FIRES on a *present* completion_context is, by
+        # construction, session-coarse: no temporal-proximity is available (audit carries ts only,
+        # no turn/line). The M2 false-positive (fired on an UNRELATED completion claim) is
+        # runtime-indistinguishable from a true positive, so we cannot label FP vs TP — but we CAN
+        # count coarse fires. Re-eval trigger: when the session_coarse fire-count crosses a threshold
+        # established after baseline observation, reconsider building the proximity API (still
+        # deferred — YAGNI). This is the "instrument" of instrument-before-engineering; it is NOT the
+        # proximity engine (granularity-engine unchanged — KEEP session-level decision stands).
+        _completion_context_proximity = (
+            "session_coarse"
+            if (gate.get("require_completion_context")
+                and completion_context_state == "present"
+                and any(t.startswith("error:") for t in triggered_by))
+            else None
+        )
+
         results.append({
             "skill": skill,
             "tier": ssot_tier_map.get(skill, "?"),
@@ -775,6 +793,10 @@ def build_hard_gate_candidates(
             # the error: outcome labels stripped by the require_completion_context gate.
             "completion_context_state": completion_context_state,
             "suppressed_signals": _suppressed_signals,
+            # CSR #1097: M2 session-coarse marker (see comment above) — null unless this is a
+            # require_completion_context gate firing on a present (session-coarse) completion context.
+            # Count of "session_coarse" across runs = the evidence that fires the proximity re-eval.
+            "completion_context_proximity": _completion_context_proximity,
         })
     return results, warnings
 
