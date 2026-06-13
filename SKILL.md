@@ -135,7 +135,8 @@ ARGUMENTS가 있으면 해당 모드에 맞는 헤더를 한 줄 출력한 뒤 �
 **1단계 — 스킬 인덱스 로드**
 
 ```bash
-SKILL_INDEX="/tmp/skill-index.json"
+SKILL_INDEX="$HOME/.claude/da-tools/skill-index.json"   # CSR #1260: da-tools primary SSOT
+[ -f "$SKILL_INDEX" ] || SKILL_INDEX="/tmp/skill-index.json"   # legacy /tmp fallback
 FALLBACK_MODE=false
 
 if [ ! -f "$SKILL_INDEX" ]; then
@@ -155,7 +156,11 @@ fallback 모드: `~/.claude/skills/*/SKILL.md` 직접 glob 스캔으로 인덱�
 import json, os
 from pathlib import Path
 
-data = json.load(open("/tmp/skill-index.json"))
+# CSR #1260: da-tools primary SSOT → /tmp legacy fallback
+_idx = Path.home() / ".claude" / "da-tools" / "skill-index.json"
+if not _idx.exists():
+    _idx = Path("/tmp/skill-index.json")
+data = json.load(open(_idx))
 # v1/v2 하위 호환
 if isinstance(data, list):
     skills = data
@@ -385,7 +390,12 @@ char_budget = 200_000 * 4 * budget_fraction
 **2단계 — 스킬 인덱스 로드 + 분석**
 
 ```python
-data = json.load(open("/tmp/skill-index.json"))
+# CSR #1260: da-tools primary SSOT → /tmp legacy fallback
+from pathlib import Path
+_idx = Path.home() / ".claude" / "da-tools" / "skill-index.json"
+if not _idx.exists():
+    _idx = Path("/tmp/skill-index.json")
+data = json.load(open(_idx))
 skills = data.get("skills", data) if isinstance(data, dict) else data
 
 desc_map = [(s.get("skill","?"), s.get("description",""), s.get("source_kind",""),

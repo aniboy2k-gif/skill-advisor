@@ -21,16 +21,19 @@ if _SCRIPTS_DIR not in sys.path:
 from channels import github_raw, npm, pip as pip_channel
 
 SOURCES_PATH = Path.home() / ".claude" / "skill-sources.json"
-SKILL_INDEX_PATH = Path("/tmp/skill-index.json")
+# CSR #1260: da-tools primary SSOT. constants.SKILL_INDEX가 primary(da-tools, 영속) →
+# /tmp legacy fallback 순으로 해석한다 (DRY — constants.py 단일 정의 재사용).
+from constants import SKILL_INDEX as SKILL_INDEX_PATH
 SKILL_INDEX_SH = Path.home() / ".claude/hooks/skill-index.sh"
 
 
 def ensure_skill_index() -> bool:
     """skill-index.json이 없으면 skill-index.sh를 자동 실행해 재생성한다.
 
-    Stop 훅이 /tmp/skill-index.json을 세션 종료마다 삭제하기 때문에,
-    update.py 실행 시점에 파일이 없으면 resolve_local_path가 전부 실패한다.
-    이를 방지하기 위해 파일 부재 시 자동 복구한다.
+    CSR #1260: SKILL_INDEX_PATH는 constants.SKILL_INDEX가 da-tools primary(영속)
+    → /tmp legacy fallback 순으로 해석한 경로다. primary는 영속이므로 정상 머신에서는
+    이미 존재해 이 재생성 분기는 사실상 비활성이며, primary 부재(fresh machine) 시에만
+    fallback으로 발동한다.
 
     Returns:
         True  = 파일이 있음 (기존 또는 재생성 성공)
