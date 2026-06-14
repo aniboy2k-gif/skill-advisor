@@ -244,6 +244,14 @@ def check_session_coherence(jsonl: Path | None, jsonl_source: str) -> str | None
 _MAX_JSONL_SIZE = 100 * 1024 * 1024  # 100MB
 
 
+# CSR #1094 — Reader parity note. This reader (reversed newest-first, tail-seek) and
+# jsonl_analyzer.analyze_session_signals (forward full-read, absolute line_index) DELIBERATELY
+# keep their traversal separate. A shared json.loads/iterator primitive was evaluated and
+# DECLINED (da-chain Tier 2, 3-AI): drift-proof idiom, rule-of-three not met (2 call sites), and
+# a dict|None return would collapse blank/malformed/non-object. The ONE shared invariant —
+# a malformed line is skipped, not raised — is bound by tests/test_csr1094_jsonl_parse_parity.py,
+# NOT by shared code. Encoding fallback and error-accounting (counter here vs warn there) are
+# intentionally divergent.
 def extract_edits(jsonl: Path, max_edits: int = 200) -> tuple[list[dict], dict]:
     # JSONL 크기 제한 — 100MB 초과 시 최근 부분만 읽음
     try:

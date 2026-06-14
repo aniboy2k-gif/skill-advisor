@@ -70,6 +70,14 @@ def _extract_subagent_invocations(lines: list[str]) -> list[dict]:
     return invocations
 
 
+# CSR #1094 — Reader parity note. This reader (forward full-read, absolute line_index) and
+# session-review.extract_edits (reversed newest-first, tail-seek) DELIBERATELY keep their
+# traversal separate. A shared json.loads/iterator primitive was evaluated and DECLINED
+# (da-chain Tier 2, 3-AI): the only shareable surface is a drift-proof idiom, rule-of-three is
+# not met (2 call sites), and a dict|None return would collapse blank/malformed/non-object.
+# The ONE shared invariant — a malformed line is skipped, not raised — is bound by
+# tests/test_csr1094_jsonl_parse_parity.py, NOT by shared code. Encoding fallback and
+# error-accounting (warn here vs counter there) are intentionally divergent.
 def analyze_session_signals(
     jsonl_path: Path,
     max_events: int = 200,
