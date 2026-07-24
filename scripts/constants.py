@@ -28,6 +28,16 @@ DATA_DIR = SCRIPTS_DIR.parent / "data"
 # Tool names that write files
 FILE_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
+# tool_use names whose presence counts as INVOKING a Hard Gate (skill → tool names).
+# Same semantic as a slash command in session-review: "invoked, NOT outcome-verified"
+# (a /plan slash is marked executed regardless of whether that plan was approved; a
+# tool invocation is the same-or-stronger 'invoked' evidence — ExitPlanMode means a
+# plan was actually presented). Kept as a CODE constant, NOT in hard-gates.json, so the
+# enforcement SSOT and its json-loaders (hard_gate_parser) stay unaffected — the plan→tools
+# map is diagnostic-only (da-chain trader922-followup: Gemini HIGH-2 SSOT-pollution,
+# Claude Web Q3). Precedent: FILE_WRITE_TOOLS above. Match is exact-case set intersection.
+GATE_EXECUTION_TOOL_NAMES = {"plan": frozenset({"EnterPlanMode", "ExitPlanMode"})}
+
 # Paths to exclude from skill matching
 EXCLUDE_PREFIXES = (
     str(Path.home() / ".claude" / "projects"),

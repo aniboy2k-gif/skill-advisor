@@ -24,6 +24,7 @@ from constants import (  # noqa: E402
     DATA_DIR,
     EXCLUDE_PREFIXES,
     FILE_WRITE_TOOLS,
+    GATE_EXECUTION_TOOL_NAMES,
     PROJECTS_BASE,
     SKILL_INDEX,
 )
@@ -281,34 +282,59 @@ def extract_edits(jsonl: Path, max_edits: int = 200) -> tuple[list[dict], dict]:
     tool_uses_seen = 0
     parse_errors = 0
     edits: list[dict] = []
+    # Gate-invocation tool names seen in the MAIN thread (da-chain trader922-followup).
+    # Decoupled from the max_edits break so a plan tool early in the session (the typical
+    # shape) isn't missed in edit-heavy sessions (Gemini/ChatGPT HIGH). Single pass with a
+    # short-circuit — NOT a second full parse (Claude Web HIGH-2 perf).
+    tool_names_seen: set[str] = set()
+    _gate_tools: frozenset[str] = (
+        frozenset().union(*GATE_EXECUTION_TOOL_NAMES.values())
+        if GATE_EXECUTION_TOOL_NAMES else frozenset()
+    )
 
     for line in reversed(all_lines):
-        if len(edits) >= max_edits:
-            break
         try:
             d = json.loads(line)
         except json.JSONDecodeError:
             parse_errors += 1
             continue
 
+        # isSidechain=True lines are a subagent's own internal transcript. Exclude them
+        # from gate-invocation evidence — a Plan subagent's EnterPlanMode/ExitPlanMode must
+        # NOT count as the PARENT /plan Hard Gate being executed (that would flip a real
+        # /plan skip into a false "executed", the worst-direction error for a coverage tool
+        # — da-chain Claude Web HIGH-1). Matches the jsonl_analyzer isSidechain convention.
+        _is_sidechain = d.get("isSidechain") is True
+
         for c in d.get("message", {}).get("content", []) or []:
             if not isinstance(c, dict) or c.get("type") != "tool_use":
                 continue
             tool_uses_seen += 1
             name = c.get("name", "")
-            if name in FILE_WRITE_TOOLS:
+            # gate-invocation evidence — exact-case (no lowercase), tool_use blocks only
+            # (never tool_result payloads that might echo a tool name), main-thread only.
+            if name and not _is_sidechain:
+                tool_names_seen.add(name)
+            if len(edits) < max_edits and name in FILE_WRITE_TOOLS:
                 inp = c.get("input", {})
                 path = inp.get("file_path") or inp.get("path")
                 if path:
                     edits.append({"file": path, "tool": name})
-                    if len(edits) >= max_edits:
-                        break
+
+        # short-circuit: enough edits AND all gate tools already found → stop early
+        # (recovers the original early-break's savings while guaranteeing plan-tool
+        # collection). If some gate tool is absent, keep scanning (correctness > perf).
+        if len(edits) >= max_edits and (not _gate_tools or _gate_tools <= tool_names_seen):
+            break
 
     stats = {
         "total_lines": len(all_lines),
+        # NOTE: with the max_edits break relocated below the body, tool_uses is now counted
+        # further into the transcript than before (more accurate; may exceed the old value).
         "tool_uses": tool_uses_seen,
         "edits_found": len(edits),
         "parse_errors": parse_errors,
+        "tool_names": sorted(tool_names_seen),
     }
     return edits, stats
 
@@ -619,6 +645,7 @@ def build_hard_gate_candidates(
     session_id: str | None = None,
     subagent_invocations: list[dict] | None = None,
     completion_context_state: str = "absent",
+    tool_names_seen: set[str] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Hard Gate 트리거 후보 탐지 (CSR #825 schema_version 2).
 
@@ -639,6 +666,19 @@ def build_hard_gate_candidates(
     gates, warnings = load_hard_gates()
     ssot_tier_map = _load_ssot_tier_map()
     invoked = {cmd.lstrip("/") for cmd in slash_commands}
+    # Gate-invocation via tool_use (da-chain trader922-followup): a gate can be executed
+    # through a tool (EnterPlanMode/ExitPlanMode) instead of a slash command.
+    _tool_names = tool_names_seen or set()
+    # orphan-key guard (Claude Web MEDIUM, mirrors the signal_match_mode orphan warning):
+    # a GATE_EXECUTION_TOOL_NAMES key that is not an actual gate skill silently disables the
+    # tool-evidence path (e.g. a future gate rename) — surface it instead of failing silent.
+    _gate_skills = {g.get("skill", "") for g in gates}
+    for _k in GATE_EXECUTION_TOOL_NAMES:
+        if _k not in _gate_skills:
+            warnings.append(
+                f"GATE_EXECUTION_TOOL_NAMES key '{_k}' is not a hard-gate skill "
+                f"(orphaned — gate renamed? tool-evidence detection is inert for it)"
+            )
 
     # CSR #1030: structured-signal context (subagent presence). Count is session-wide and
     # uncapped (jsonl_analyzer full-scan); distinct types are deduped, order-preserved.
@@ -667,14 +707,28 @@ def build_hard_gate_candidates(
     for gate in gates:
         skill = gate.get("skill", "")
         slash_matched = skill in invoked
+        # tool-invocation evidence (da-chain trader922-followup): a gate executed via a tool
+        # (e.g. plan → EnterPlanMode/ExitPlanMode) rather than a slash command. Same "invoked,
+        # not outcome-verified" bar as slash. Exact-case set intersection; sidechain already
+        # excluded upstream (extract_edits).
+        _gate_tool_hits = sorted(GATE_EXECUTION_TOOL_NAMES.get(skill, frozenset()) & _tool_names)
+        tool_matched = bool(_gate_tool_hits)
+        executed = slash_matched or tool_matched
 
         # v1 legacy_detected (60일 deprecation)
-        legacy_detected: bool | str = slash_matched
-        detection_basis = "slash_command_found" if slash_matched else "JSONL keyword match [ESTIMATED]"
+        legacy_detected: bool | str = executed
+        if slash_matched and tool_matched:
+            detection_basis = f"slash_command_found + tool_use ({', '.join(_gate_tool_hits)})"
+        elif slash_matched:
+            detection_basis = "slash_command_found"
+        elif tool_matched:
+            detection_basis = f"tool_use ({', '.join(_gate_tool_hits)})"
+        else:
+            detection_basis = "JSONL keyword match [ESTIMATED]"
 
         # hook 방식 게이트: gate-artifacts/<skill>.done.<session_id> 마커 탐지
         artifact_confirmed = False
-        if not slash_matched and session_id:
+        if not executed and session_id:
             done_file = _gate_dir / f"{skill}.done{_done_suffix}"
             if done_file.exists():
                 legacy_detected = "artifact"
@@ -755,7 +809,7 @@ def build_hard_gate_candidates(
         )
 
         # v2 detected (4 string status — CSR #825 C-A1 회피, triggered_by 비어있지 않으면 격상)
-        if slash_matched:
+        if executed:  # slash_command OR tool_use invocation (da-chain trader922-followup)
             detected_v2 = "executed"
         elif artifact_confirmed:
             detected_v2 = "artifact_confirmed"
@@ -1175,6 +1229,7 @@ def main() -> int:
         edits, slash_commands, error_signals, session_id=_current_session_id,
         subagent_invocations=_subagent_invocations,
         completion_context_state=_completion_context_state,
+        tool_names_seen=set(stats.get("tool_names", [])),
     )
 
     if args.json_out:
