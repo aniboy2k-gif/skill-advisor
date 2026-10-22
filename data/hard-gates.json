@@ -7,62 +7,142 @@
       "skill": "systematic-debugging",
       "trigger_pattern": "버그·테스트 실패·예기치 않은 동작",
       "trigger_pattern_en": "bug, test failure, unexpected behavior",
-      "session_signals": ["error", "exception", "ImportError", "pytest", "failed", "traceback", "AssertionError"]
+      "session_signals": [
+        "error",
+        "exception",
+        "ImportError",
+        "pytest",
+        "failed",
+        "traceback",
+        "AssertionError"
+      ]
     },
     {
       "skill": "plan",
-      "trigger_pattern": "새 기능 구현 전 (3파일+·아키텍처·API 변경·SKILL.md 수정)",
-      "trigger_pattern_en": "new feature (3+ files), architecture, API change",
-      "session_signals": ["SKILL.md"]
+      "trigger_pattern": "새 기능 구현 전 (3파일+·아키텍처·API 변경·SKILL.md 수정) · 작업 중 변경 파일이 3+ 로 늘어난 시점에도 재평가",
+      "trigger_pattern_en": "new feature (3+ files), architecture, API change; re-evaluate when the changed-file count grows to 3+ mid-task",
+      "session_signals": [
+        "SKILL.md"
+      ],
+      "reevaluate_on_growth": {
+        "why": "착수 시점 판정은 그때의 계획 기준이다. CSR #2078 에서 2파일로 시작한 작업이 DA 검토 중 3파일이 됐는데 /plan 을 재호출하지 않아 ★C 게이트를 놓쳤다.",
+        "check": "변경 파일 수가 늘 때마다 이 표의 진입 조건을 다시 본다",
+        "evidence": "CSR #2078 c#7180 (자진 기록) · skill-advisor 가 plan=miss 로 포착",
+        "detail": "claude_docs #305 ⑸"
+      }
     },
     {
       "skill": "security-pipeline",
       "trigger_pattern": "API·인증·보안·HIL·권한·감사 로그 관련 설계 시",
       "trigger_pattern_en": "API, auth, security design",
-      "session_signals": ["auth", "security", "credentials", "token", "OWASP", "password", "secret"]
+      "session_signals": [
+        "auth",
+        "security",
+        "credentials",
+        "token",
+        "OWASP",
+        "password",
+        "secret"
+      ]
     },
     {
       "skill": "verification-before-completion",
       "trigger_pattern": "코드·기능 구현 완료 선언 전",
       "trigger_pattern_en": "before claiming completion",
-      "session_signals": ["conftest", "/tests/", "_test.", ".spec.", ".test.", "AssertionError", "--- FAIL", "Failure/Error", "test result: FAILED", "expect(received", "test failed"],
+      "session_signals": [
+        "conftest",
+        "/tests/",
+        "_test.",
+        ".spec.",
+        ".test.",
+        "AssertionError",
+        "--- FAIL",
+        "Failure/Error",
+        "test result: FAILED",
+        "expect(received",
+        "test failed"
+      ],
       "signal_match_targets": {
-        "conftest": "file", "/tests/": "file", "_test.": "file", ".spec.": "file", ".test.": "file",
-        "AssertionError": "error", "--- FAIL": "error", "Failure/Error": "error", "test result: FAILED": "error", "expect(received": "error", "test failed": "error"
+        "conftest": "file",
+        "/tests/": "file",
+        "_test.": "file",
+        ".spec.": "file",
+        ".test.": "file",
+        "AssertionError": "error",
+        "--- FAIL": "error",
+        "Failure/Error": "error",
+        "test result: FAILED": "error",
+        "expect(received": "error",
+        "test failed": "error"
       },
-      "structured_signals": ["completion_context"],
+      "structured_signals": [
+        "completion_context"
+      ],
       "require_completion_context": true
     },
     {
       "skill": "vercel-react-best-practices",
       "trigger_pattern": "React 컴포넌트 설계·구현 시",
       "trigger_pattern_en": "React component design/implementation",
-      "session_signals": [".tsx", ".jsx", "React", "component"]
+      "session_signals": [
+        ".tsx",
+        ".jsx",
+        "React",
+        "component"
+      ]
     },
     {
       "skill": "handoff-verify",
       "trigger_pattern": "서브에이전트 작업 완료 검증 시",
       "trigger_pattern_en": "sub-agent task completion verification",
-      "session_signals": ["subagent", "sub-agent", "agent completed", "서브에이전트"],
-      "structured_signals": ["subagent_invoked"]
+      "session_signals": [
+        "subagent",
+        "sub-agent",
+        "agent completed",
+        "서브에이전트"
+      ],
+      "structured_signals": [
+        "subagent_invoked"
+      ]
     },
     {
       "skill": "trader-task",
       "trigger_pattern": "trader_log #N 처리·ARIA/KRIS 작업·관련 코드 변경 시",
       "trigger_pattern_en": "trader-log work, ARIA/KRIS task, related code change",
-      "session_signals": ["trader-log", "ARIA", "KRIS", "/trader-task", "trader_log #"]
+      "session_signals": [
+        "trader-log",
+        "ARIA",
+        "KRIS",
+        "/trader-task",
+        "trader_log #"
+      ]
     },
     {
       "skill": "csr-task",
       "trigger_pattern": "CSR #N 처리·CSR 보드 작업·AI 게시판 인프라/스킬/메모리/DA/hook/룰 변경 시",
       "trigger_pattern_en": "CSR work, AI bulletin board infra/skill/memory/DA/hook/rule",
-      "session_signals": ["CSR", "csr-task", "/csr-task", "AI 게시판"]
+      "session_signals": [
+        "CSR",
+        "csr-task",
+        "/csr-task",
+        "AI 게시판"
+      ]
     },
     {
       "skill": "guide-comment-rule",
       "trigger_pattern": "가이드 게시판 본문/댓글 편집 시 R1 (4500cp) + R2 (댓글=changelog) 정책 인지",
       "trigger_pattern_en": "Guide board body/comment edit — R1 (4500cp) + R2 (comment=changelog) policy",
-      "session_signals": ["4500", "force-comment", "guide-log", "가이드 본문", "댓글 변경 이력", "claude_docs", "bb_guide", "trader_guide", "qms_guide"]
+      "session_signals": [
+        "4500",
+        "force-comment",
+        "guide-log",
+        "가이드 본문",
+        "댓글 변경 이력",
+        "claude_docs",
+        "bb_guide",
+        "trader_guide",
+        "qms_guide"
+      ]
     }
   ]
 }
