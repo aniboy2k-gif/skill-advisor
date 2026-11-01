@@ -1,6 +1,7 @@
 ---
 name: skill-advisor
-description: "(hook)"
+description: "설치된 스킬 진단·추천 도구. 스킬 커버리지·트리거 점검(--scan), 이번 세션에 로드됐어야 할 스킬·Hard Gate 누락 확인(--session-review), 업스트림 업데이트 확인·적용(--update), 스킬 목록 description 예산 진단(--listing-audit)이 필요할 때 사용. 스킬 점검·세션 리뷰·Hard Gate 확인 요청 시."
+hook_no_opt: true   # CSR #2486 P8-H6: utterance-routed skill; OPT-1 must not shorten this description
 argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>] | --update [<skill>] [--apply] [--yes] [--dry-run] [--json] [--keep-backup] [--no-listing-audit] | --listing-audit [--apply] [--json]'
 ---
 
@@ -19,7 +20,7 @@ conflicts_with: []
 
 # /skill-advisor
 
-> 설치된 스킬 커버리지 진단 + 활용법 안내 도구. **read-only 원칙** — SKILL.md를 직접 수정하지 않는다.
+> 설치된 스킬 커버리지 진단 + 활용법 안내 도구. **read-only 원칙** — SKILL.md를 직접 수정하지 않는다. 선언된 예외 = 이미 동작 중인 쓰기 모드 2개: `--update --apply`(`scripts/channels/github_raw.py` `apply()` 가 업스트림 내용으로 대상 SKILL.md 를 원자적 교체)와 `--listing-audit --apply`(OPT-1 후보의 description 을 `"(hook)"` 으로 교체) — 둘 다 계획 출력 + `y/N` 확인(`scripts/update.py` `prompt_confirm`) 뒤에만 쓴다(`--yes` = 확인 생략, CI 전용). 원칙 자체의 재정의는 CSR #825 에서 기각됨(REJECT C). skill-advisor 자신의 SKILL.md 는 어느 모드로도 고치지 않는다(아래 「--update 모드」).
 
 ---
 
@@ -354,7 +355,7 @@ severity 순 (critical → high → medium → info):
 
 ### 배경 지식 (바이너리 검증)
 
-Claude Code의 스킬 목록 예산 공식 (v2.1.142 바이너리 확인):
+Claude Code의 스킬 목록 예산 공식 (v2.1.142 바이너리에서 확인 — 이후 버전에서는 재확인하지 않았다. 수치를 근거로 쓰기 전에 현재 버전에서 다시 확인):
 ```
 char_budget = (contextTokens ?? 200_000) × 4 × skillListingBudgetFraction
 ```
@@ -365,6 +366,7 @@ char_budget = (contextTokens ?? 200_000) × 4 × skillListingBudgetFraction
 **hook 스킬 description 규약** (`"(hook)"` 패턴):
 - `trigger_block` + `file_path_globs > 0` 스킬은 파일 경로 기반으로 자동 트리거
 - 이런 스킬의 description은 시스템 목록에 불필요 → `"(hook)"` (6자) 사용 권장
+- 단, `utterance_patterns` 가 있거나 Tier A/B/C Hard Gate 인 스킬은 제외 — 그 description 은 호출 라우팅 신호다(`--scan` OPT-1 과 같은 규칙, CSR #969)
 - **주의**: `description: ""` (빈 문자열)은 사용 금지 — Claude Code가 SKILL.md body 첫 줄을 description으로 fallback하여 `<!--trigger_conditions` 노출 버그 발생
 
 ### 실행 단계
@@ -400,18 +402,33 @@ skills = data.get("skills", data) if isinstance(data, dict) else data
 
 desc_map = [(s.get("skill","?"), s.get("description",""), s.get("source_kind",""),
              s.get("file_path_globs",[]), s.get("skill_path",""),
-             s.get("hook_no_opt", False))
+             s.get("hook_no_opt", False),
+             bool((s.get("utterance_patterns") or {}).get("ko")
+                  or (s.get("utterance_patterns") or {}).get("en")))
             for s in skills]
 
 total_chars = sum(len(d) for _,d,*_ in desc_map)
 shortened_count = sum(1 for _,d,*_ in desc_map if len(d) > max_desc_chars)
 
-# OPT-1 후보: trigger_block + globs>0 + desc>100 + desc!="(hook)" + not hook_no_opt
+# --scan 과 같은 Tier A/B/C Hard Gate 집합 (CSR #969 — 아래 OPT-1 제외 조건)
+hard_gate_ids_critical = set()
+_hg = Path.home() / ".claude" / "hard-gates.json"
+if _hg.exists():
+    try:
+        _gates = json.loads(_hg.read_text(encoding="utf-8")).get("gates", [])
+        hard_gate_ids_critical = {g.get("id") for g in _gates
+                                  if g.get("id") and g.get("tier") in ("A", "B", "C")}
+    except (json.JSONDecodeError, OSError):
+        pass
+
+# OPT-1 후보: --scan OPT-1 과 같은 규칙 (CSR #969) — trigger_block + globs>0 + desc>100
+#   + desc!="(hook)" + not hook_no_opt + utterance 없음 + Tier A/B/C Hard Gate 아님
 opt1_candidates = [
     (name, len(desc), path)
-    for name, desc, src, globs, path, no_opt in desc_map
+    for name, desc, src, globs, path, no_opt, has_utt in desc_map
     if src == "trigger_block" and len(globs) > 0
     and len(desc) > 100 and desc != "(hook)" and not no_opt
+    and not has_utt and name not in hard_gate_ids_critical
 ]
 
 # 예산 상태
@@ -630,7 +647,7 @@ Hard Gate 준수 여부(추정), 파일 편집 기반 스킬 후보, 도움이 �
 ```
 
 **핵심 원칙**: 확정 진단 금지 — 추정 기반 후보 탐지만 허용.
-로드 이력은 직접 확인 불가 (Phase 1.5 로드 로그 완료 전).
+로드 이력은 대조하지 않는다 — 로드 로그 `~/.claude/da-tools/skill-load.jsonl` 은 `skill-auto-loader.sh` 가 이미 기록하지만 `session-review.py` 가 아직 읽지 않는다(아래 「Phase 1.5 의존성」).
 
 ### 두 트랙 동작
 
@@ -641,7 +658,7 @@ Hard Gate 준수 여부(추정), 파일 편집 기반 스킬 후보, 도움이 �
 | 분석 내용 | **동일** | **동일** |
 | 출력 | `[Track 1: session-retrospective]` | `[Track 2: built-in]` |
 
-Track 1은 session-retrospective 설치 후 session_id 획득 가능한 세션에서 자동 활성화된다. `CLAUDE_SESSION_ID` 환경변수는 2026-05-01까지 deprecation fallback으로만 유효.
+Track 1은 session-retrospective 설치 후 session_id 획득 가능한 세션에서 자동 활성화된다. session_id 는 hook stdin `.session_id` 가 1순위이고, `session-review.py` 가 읽는 환경변수는 `CLAUDE_CODE_SESSION_ID` 다. 옛 이름 `CLAUDE_SESSION_ID` 는 deprecated — 새로 쓰지 않는다.
 
 ### 실행 방법
 
@@ -676,7 +693,7 @@ python3 ~/.claude/skills/skill-advisor/scripts/session-review.py
 - `signal_recommendations` (에러 신호 기반)
 
 > ⚠ `hard_gate_candidates`는 JSONL 슬래시 커맨드 탐지 + 파일 신호 기반 추정 `[ESTIMATED]`.
-> Phase 1.5 로드 로그 완료 전까지 신뢰도가 제한적이다.
+> 로드 로그(`skill-load.jsonl`)와 대조하지 않으므로 신뢰도가 제한적이다.
 
 ### Known Limitations
 
@@ -688,16 +705,14 @@ python3 ~/.claude/skills/skill-advisor/scripts/session-review.py
 
 ### Phase 1.5 의존성
 
-`--session-review`의 "로드 이력 직접 대조" 기능은 `skill-auto-loader.sh`에 로드 로그 기록이
-추가되어야 한다. Phase 1.5 구현 시 아래 두 파일을 동시에 업데이트해야 한다:
-- `~/.claude/hooks/skill-auto-loader.sh` (로드 이벤트 기록 추가)
-- 이 SKILL.md (로그 경로 및 형식 명시)
+`skill-auto-loader.sh` 는 이미 로드 이벤트를 `~/.claude/da-tools/skill-load.jsonl` 에 기록한다(그 hook 의 `skill_load_jsonl` 변수 — 2026-11-01 확인, 파일 존재).
+`--session-review` 는 이 로그를 아직 읽지 않는다 — "로드 이력 직접 대조"를 하려면 `scripts/session-review.py` 에 읽기 코드를 더하고, 같은 변경에서 이 SKILL.md 에 로그 형식을 적는다.
 
 ---
 
-## Phase 2 진입 조건 (--apply 활성화 조건)
+## Phase 2 진입 조건 (`--scan`/`--enrich` 제안 자동 적용)
 
-현재 --apply는 비활성화 상태. 아래 체크리스트가 모두 완료되면 Phase 2 진입:
+`--scan`/`--enrich` 의 제안(proposal)을 SKILL.md 에 자동 적용하는 모드는 아직 없다(미구현). 아래 체크리스트가 모두 완료되면 Phase 2 진입. ★ 이것은 이미 동작하는 `--update --apply`·`--listing-audit --apply` 와 별개다 — 그 두 모드는 머리말 「쓰기 모드 2개」 규칙(계획 출력 + `y/N` 확인)대로 지금 쓴다:
 
 - [ ] flock 기반 SKILL.md 파일 잠금 프로토콜 구현
 - [ ] SKILL.md frontmatter에 `who_last_modified` 메타데이터 추가
@@ -806,7 +821,7 @@ fi
 ## 설계 결정 기록
 
 - **명칭**: `/skill-advisor` — DA 2회 Finalized (2026-04-23)
-- **read-only 원칙**: SKILL.md 직접 수정 불가 — Phase 2 체크리스트 완료 후에만 --apply 활성화
+- **read-only 원칙**: `--scan`/`--enrich`/`--session-review` 는 SKILL.md 직접 수정 불가 — 그 제안의 자동 적용은 Phase 2 체크리스트 완료 후. `--update --apply`·`--listing-audit --apply` 는 확인 후 쓰는 별도 모드(머리말·「--update 모드」)
 - **수동 전용 분류**: file_path_globs=[] + tool_events=[] + utterance_patterns 있음 → H1-M(info). 세 필드 모두 비어있으면 H0(high).
 - **이벤트 전용 분류**: file_path_globs=[] + tool_events>0 → H1-E(info). 의도적 설계로 간주, H1 경고 제외.
 - **skill-index.json fallback**: 파일 없거나 재생성 실패 시 직접 스캔으로 진행
@@ -814,9 +829,9 @@ fi
 - **exit code**: 기존 도구 관례 준수 (0=성공, 1=이슈/경고, 2=실행 실패)
 - **OCP 허용**: file_path_globs=[] — 수동 호출 전용 도구
 - **OPT-1 opt-out 방식**: whitelist 대신 opt-out(hook_no_opt: true) 채택 — 새 hook 스킬 추가 시 자동 감지, 예외만 명시 (ChatGPT DA H-1 반영, 2026-05)
-- **"(hook)" placeholder 규약**: trigger_block + file_path_globs>0 스킬에 적용. `""` 사용 금지 (body fallback 버그). hook_no_opt: true로 억제 가능 (2026-05 세션 검증)
+- **"(hook)" placeholder 규약**: trigger_block + file_path_globs>0 스킬에 적용(utterance 보유·Tier A/B/C Hard Gate 는 제외 — CSR #969). `""` 사용 금지 (body fallback 버그). hook_no_opt: true로 억제 가능 (2026-05 세션 검증)
 - **--listing-audit 범위**: settings.json 읽기(진단) + SKILL.md 수정(--apply). settings.json 수정은 제안만 — 적용은 /update-config 위임 (DA H-1 SRP 반영)
-- **char_budget 공식**: 200K × 4 × fraction = 문자 예산 (바이너리 v2.1.142 검증, 2026-05)
+- **char_budget 공식**: 200K × 4 × fraction = 문자 예산 (바이너리 v2.1.142 검증, 2026-05 — 이후 버전 미재확인)
 - **post-apply 자동 listing-audit**: `--update --apply` 완료 후 github_raw 1개+ 적용 시 `--listing-audit --apply` 자동 실행 (기본 ON). 억제: `--no-listing-audit` 플래그. 이유: 업스트림 업데이트가 로컬 "(hook)" 최적화를 덮어쓸 수 있음 (2026-05 실증)
 
 ---
