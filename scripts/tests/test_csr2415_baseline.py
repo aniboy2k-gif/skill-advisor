@@ -499,3 +499,29 @@ def test_pip_major_bump(monkeypatch):
     assert r["outdated"]["anthropic"]["major_bump"] is True
     assert r["outdated"]["requests"]["major_bump"] is False
     assert "anthropic 0.109.0->2.0.1" in r["warning"]
+
+
+# ─── V2c: --force-overwrite does not bypass (c), (d), (e) (CSR #2550 N4) ──────
+
+def test_v2c_force_does_not_bypass_new_missing_refs(env):
+    env.net.pages[URL] = U1 + "\nrun `scripts/new_tool.py`\n"
+    env.net.pages[pinned(C1)] = env.net.pages[URL]
+    ent = {**env.entry, "baseline": base_obj(U0, with_tc(U0))}
+    _, res = _apply(env, ent, force_overwrite=True)
+    assert res["blocked"] and "new missing references" in res["reason"]
+    assert env.wt_local.read_text() == with_tc(U0)
+
+
+def test_v2c_force_does_not_bypass_operational_tree(env):
+    ent = {**env.entry, "baseline": base_obj(U0, with_tc(U0))}
+    _, res = _apply(env, ent, target=env.local, force_overwrite=True)
+    assert res["blocked"] and "operational tree" in res["reason"]
+    assert env.local.read_text() == with_tc(U0)
+
+
+def test_v2c_force_does_not_bypass_upstream_moved(env):
+    env.net.pages[pinned(C1)] = U2
+    ent = {**env.entry, "baseline": base_obj(U0, with_tc(U0))}
+    _, res = _apply(env, ent, force_overwrite=True)
+    assert res["blocked"] and "upstream moved since check" in res["reason"]
+    assert env.wt_local.read_text() == with_tc(U0)

@@ -64,6 +64,7 @@
 # 일상 적용: 작업 트리 → apply → 커밋 + PR → 병합 → 운영 트리 git pull --ff-only
 git -C "$OP" worktree add <wt> -b <branch> origin/main
 python3 scripts/update.py <skill> --apply --worktree <wt> [--yes] [--keep-backup]
+#   기준 판이 없는 스킬은 (f) 로 거부(종료 2) — 차이를 검토한 뒤 같은 명령에 --force-overwrite (경고 줄 · .bak 보존)
 
 # 기준 판 기록: --hash 없이 먼저 돌려 해시·ref·줄 수를 보고(아무것도 쓰지 않음), 검토 뒤 같은 해시로
 python3 scripts/update.py --set-baseline <skill> [--ref <commit>] [--note "<왜>"]

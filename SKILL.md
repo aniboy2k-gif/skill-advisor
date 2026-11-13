@@ -752,12 +752,13 @@ python3 ~/.claude/skills/skill-advisor/scripts/session-review.py
 | `github_raw` / `anthropic_official` / `microsoft` / `community` | 정규화 해시 비교 + 기준 판 비교 | 거부 규칙 통과 시 backup→apply→atomic rename + 기준 판 갱신 |
 | `npm` | npm outdated + npm audit | v1.0: 명령어 출력만 (직접 설치 안 함) |
 | `pip` | pip list --outdated + 메이저 버전 상승 경고(`major_bump`) | v1.0: 명령어 출력만 (직접 설치 안 함) |
+| `local_custom` | 체크 없음 (항상 local-custom) | 해당 없음 |
 
 **기준 판(baseline)·거부 규칙** — 「상류가 바뀜」과 「로컬에서 고침」을 `skill-sources.json` 의 스킬별 `baseline` 으로 가른다. 판정표·거부 규칙 8개·`--worktree`·`--set-baseline`·패치 세트 스킬 처리·한계 = [`references/update-baseline.md`](references/update-baseline.md) — `--update` 결과를 해석하거나 `--apply`·`--set-baseline` 을 쓰기 전에 연다.
 
 - 일상 적용 경로 = 운영 저장소의 연결 작업 트리에서 `update.py <skill> --apply --worktree <wt>` → 커밋 + PR → 병합 → 운영 트리 `git pull --ff-only`. 운영 트리·서브모듈·패치 세트 스킬에는 쓰지 않는다.
+  - 그 스킬에 기준 판이 **없으면** 위 명령은 (f) 로 거부된다(종료 2). 상류와의 차이를 검토한 뒤 같은 명령에 `--force-overwrite` 를 더한다(경고 줄 · .bak 보존). 채택하지 않기로 했으면 대신 `--set-baseline <skill> --hash <upstream_norm_hash>` 로 「검토함」을 기록한다(그 뒤 점검은 `up-to-date (local-modified)`).
 - `--apply` 를 스킬 이름 없이, 또는 skill-sources.json 에 없는 이름으로 부르면 전 스킬이 대상이 된다 — 정확한 이름을 쓴다.
-| `local_custom` | 체크 없음 (항상 local-custom) | 해당 없음 |
 
 ### 실행 단계
 
@@ -822,7 +823,7 @@ fi
 - npm/pip --apply: 명령어 출력만 (직접 실행 없음) → v2.0에서 지원 예정
 - trigger_conditions 블록만 건드린 상류 변경은 보이지 않는다 — 기준 판 비교의 한계 전부 = [`references/update-baseline.md`](references/update-baseline.md) §8
 - trigger_conditions SKILL.md 분리: skill-index.sh 리팩터링 후 v2.0에서 지원
-- 동시 실행 락: v2.0 예정 (현재 atomic write로 최소 보호)
+- 동시 실행: `skill-sources.json` 쓰기는 `skill-sources.json.lock` 의 `fcntl` 잠금 안에서 바뀐 스킬 키만 병합한다 — 권고형 잠금이라 update.py 끼리만 조정하고 다른 쓰기 주체는 막지 않는다 (CSR #2415 r4 M2)
 
 ---
 
