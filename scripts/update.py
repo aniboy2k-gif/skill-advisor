@@ -4,11 +4,15 @@
 사용법:
   python3 update.py [<skill>] [--apply] [--yes] [--dry-run] [--json]
                     [--keep-backup] [--refresh-sources]
+                    [--worktree <linked worktree>] [--force-overwrite] [--allow-missing-refs] [--allow-main]
+  python3 update.py --set-baseline <skill> [--hash sha256:<64hex>] [--ref <commit>] [--note "<text>"] [--yes]
 """
 import argparse
+import builtins
 import datetime
-import hashlib
+import fcntl
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -21,6 +25,8 @@ if _SCRIPTS_DIR not in sys.path:
 from channels import github_raw, npm, pip as pip_channel
 
 SOURCES_PATH = Path.home() / ".claude" / "skill-sources.json"
+LOCK_PATH = Path.home() / ".claude" / "skill-sources.json.lock"
+DELETE = object()  # save_skill_keys: 키 삭제 표지
 # CSR #1260: da-tools primary SSOT. constants.SKILL_INDEX가 primary(da-tools, 영속) →
 # /tmp legacy fallback 순으로 해석한다 (DRY — constants.py 단일 정의 재사용).
 from constants import SKILL_INDEX as SKILL_INDEX_PATH
@@ -85,10 +91,53 @@ def load_sources() -> dict:
         return {"schema_version": "1.0", "skills": {}}
 
 
-def save_sources(data: dict) -> None:
-    tmp = SOURCES_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(SOURCES_PATH)
+def save_skill_keys(updates: dict) -> None:
+    """{skill: {key: value | DELETE}} 만 최신 파일에 병합해 원자 교체 (r3 L1 · r4 M2: fcntl 잠금 안에서)."""
+    with open(LOCK_PATH, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            data = json.loads(SOURCES_PATH.read_text(encoding="utf-8")) if SOURCES_PATH.exists() \
+                else {"schema_version": "1.0", "skills": {}}
+            skills = data.setdefault("skills", {})
+            for name, keys in updates.items():
+                ent = skills.setdefault(name, {})
+                for k, v in keys.items():
+                    if v is DELETE:
+                        ent.pop(k, None)
+                    else:
+                        ent[k] = v
+            tmp = SOURCES_PATH.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(SOURCES_PATH)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def op_root() -> Path:
+    """운영 트리 = dirname(realpath(~/.claude/skills))."""
+    return (Path.home() / ".claude" / "skills").resolve().parent
+
+
+def _git(path: Path, *args) -> str:
+    r = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def validate_worktree(path: Path, op: Path) -> tuple:
+    """--worktree 는 운영 저장소의 연결 작업 트리(최상위)여야 한다."""
+    p = Path(path).resolve()
+    if not p.is_dir():
+        return False, f"--worktree {path}: not a directory"
+    top = _git(p, "rev-parse", "--show-toplevel")
+    if not top or Path(top).resolve() != p:
+        return False, f"--worktree {path}: not the top of a git worktree"
+    if p == Path(op).resolve():
+        return False, f"--worktree {path}: is the operational tree itself"
+    common = _git(p, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    op_common = _git(Path(op), "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common or Path(common).resolve() != Path(op_common or "/nonexistent").resolve():
+        return False, f"--worktree {path}: not a linked worktree of the operational repository"
+    return True, ""
 
 
 def resolve_local_path(skill_name: str, entry: dict) -> Optional[Path]:
@@ -115,7 +164,8 @@ def resolve_local_path(skill_name: str, entry: dict) -> Optional[Path]:
 
 
 def print_plan_table(results: list) -> None:
-    """실행 계획 표 출력."""
+    """실행 계획 표 출력 (stderr — --json 의 stdout 을 오염시키지 않는다)."""
+    print = _stderr_print  # noqa: A001
     print("\n┌─ 실행 계획 ──────────────────────────────────────────────────────")
     header = f"{'스킬':<30} {'채널':<20} {'현재 상태':<22} {'부작용 등급'}"
     print(f"│ {header}")
@@ -134,6 +184,10 @@ def print_plan_table(results: list) -> None:
             effect = "—"
         print(f"│ {name:<30} {utype:<20} {status:<22} {effect}")
     print("└" + "─" * 70 + "\n")
+
+
+def _stderr_print(*a, **k):
+    builtins.print(*a, **k, file=sys.stderr)
 
 
 def prompt_confirm(message: str) -> bool:
@@ -182,21 +236,37 @@ def run_check(skill_filter: Optional[str], sources: dict) -> list:
             })
             continue
 
-        result = handler.check(skill_name, entry, local_path)
+        if handler is github_raw:
+            result = handler.check(skill_name, entry, local_path, op_root=op_root())
+        else:
+            result = handler.check(skill_name, entry, local_path)
         result.setdefault("upstream_type", utype)
         results.append(result)
 
     return results
 
 
-def run_apply(results: list, sources: dict, yes: bool, keep_backup: bool) -> list:
-    apply_results = []
+def write_target(local_path: Path, worktree: Optional[Path]) -> Optional[Path]:
+    """기본 = 운영 파일(apply (d) 가 거부) · --worktree = 작업 트리 안 같은 상대 경로."""
+    if worktree is None:
+        return local_path
+    try:
+        rel = local_path.resolve().relative_to(op_root())
+    except ValueError:
+        return None
+    return Path(worktree).resolve() / rel
+
+
+def run_apply(results: list, sources: dict, yes: bool, keep_backup: bool,
+              worktree: Optional[Path] = None, force_overwrite: bool = False,
+              allow_missing_refs: bool = False, allow_main: bool = False) -> list:
+    """적용 결과 행이 같은 스킬의 check 행을 대체한 목록을 돌려준다 (C-1 #9)."""
     needs_apply = [r for r in results
                    if r.get("status") in ("update-available", "update-available-with-vulnerability")
                    and not r.get("blocked")]
 
     if not needs_apply:
-        print("✅ 적용할 업데이트가 없습니다.")
+        print("✅ 적용할 업데이트가 없습니다.", file=sys.stderr)
         return results
 
     print_plan_table(needs_apply)
@@ -207,6 +277,8 @@ def run_apply(results: list, sources: dict, yes: bool, keep_backup: bool) -> lis
             return results
 
     skills_data = sources.get("skills", {})
+    merged = {r.get("skill"): r for r in results}
+    updates = {}
 
     for r in needs_apply:
         skill_name = r["skill"]
@@ -216,21 +288,107 @@ def run_apply(results: list, sources: dict, yes: bool, keep_backup: bool) -> lis
 
         local_path = resolve_local_path(skill_name, entry)
         if local_path is None:
-            apply_results.append({**r, "applied": False, "error": "로컬 경로 없음"})
+            merged[skill_name] = {**r, "applied": False, "error": "로컬 경로 없음"}
             continue
 
-        result = handler.apply(skill_name, entry, local_path, keep_backup=keep_backup)
-        apply_results.append(result)
+        if handler is github_raw:
+            target = write_target(local_path, worktree)
+            if target is None or not target.exists():
+                merged[skill_name] = {**r, "applied": False, "blocked": True, "exit_hint": 2,
+                                      "status": "local-missing" if target else r["status"],
+                                      "reason": f"local-missing in the write target: {target or local_path}"}
+                continue
+            result = handler.apply(skill_name, entry, target, r, op_root=op_root(),
+                                   keep_backup=keep_backup, force_overwrite=force_overwrite,
+                                   allow_missing_refs=allow_missing_refs, allow_main=allow_main)
+        else:
+            result = handler.apply(skill_name, entry, local_path, keep_backup=keep_backup)
 
-        # skill-sources.json 상태 갱신
         if result.get("applied"):
             now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            skills_data[skill_name]["last_updated"] = now
-            skills_data[skill_name]["last_checked"] = now
-            skills_data[skill_name]["status"] = "up-to-date"
+            keys = {"last_updated": now, "last_checked": now, "status": "up-to-date"}
+            nb = result.get("new_baseline")
+            if nb is not None:
+                if worktree is not None:
+                    if r.get("baseline_source") == "pending":   # 병합·수렴된 대기 판을 먼저 승격
+                        keys["baseline"] = entry["pending_baseline"]
+                    keys["pending_baseline"] = nb
+                else:
+                    keys["baseline"] = nb
+                    keys["pending_baseline"] = DELETE
+            updates[skill_name] = keys
+            merged[skill_name] = {**r, **result, "status": "up-to-date", "applied": True}
+        else:
+            merged[skill_name] = {**r, **result}
 
-    save_sources(sources)
-    return apply_results
+    if updates:
+        save_skill_keys(updates)
+    return list(merged.values())
+
+
+def set_baseline(skill: str, sources: dict, want_hash: Optional[str], ref: Optional[str],
+                 note: Optional[str], yes: bool) -> int:
+    """기준 판 수동 기록 — --hash 가 받은 바이트의 정규화 해시와 같을 때만 쓴다."""
+    entry = sources.get("skills", {}).get(skill)
+    if not entry or not entry.get("upstream_url"):
+        print(f"⛔ {skill}: skill-sources.json 에 upstream_url 이 있는 항목이 없습니다.")
+        return 2
+    url = entry["upstream_url"]
+    if ref:
+        purl = github_raw.pinned_url(url, ref)
+        if purl is None:
+            print(f"⛔ {skill}: upstream_url 이 raw 주소가 아니라 --ref 를 쓸 수 없습니다.")
+            return 2
+        text, unresolved = github_raw.fetch_upstream(purl), None
+    else:
+        pin = github_raw.resolve_pinned(url)
+        text, ref, unresolved = pin["text"], pin["ref"], pin["unresolved"]
+    if text is None:
+        print(f"⛔ {skill}: upstream fetch failed")
+        return 2
+    h = github_raw.norm_hash(text)
+    ps = github_raw.patch_status(skill, op_root())
+    print(f"{skill}: normalized upstream hash = {h}")
+    print(f"  ref = {ref or 'null (' + str(unresolved) + ')'}")
+    old = entry.get("baseline") or {}
+    if old.get("ref") and old.get("sha256"):
+        btext = github_raw.fetch_upstream(github_raw.pinned_url(url, old["ref"]) or "")
+        if btext is not None and github_raw.norm_hash(btext) == old["sha256"]:
+            c = github_raw.changed_lines(btext, text)
+            print(f"  baseline -> this: +{c['added']} -{c['removed']} lines")
+        else:
+            print("  baseline text unverifiable; line counts unavailable")
+    if ps.get("patched") is not False:
+        print("  note: resync-skill.sh does not read or update this baseline "
+              f"(patch status: {ps.get('patch_sets') or ps.get('patch_info')})")
+    if not want_hash:
+        print(f"  nothing written — review the bytes, then rerun with --hash {h}")
+        return 0
+    if want_hash != h:
+        print(f"⛔ refused: --hash {want_hash} != fetched {h}; nothing written")
+        return 2
+    local_path = resolve_local_path(skill, entry)
+    try:
+        local_norm = github_raw.norm_hash(github_raw.read_local_strict(local_path)) if local_path else None
+    except (UnicodeDecodeError, OSError):
+        local_norm = None
+    if local_norm is None:
+        print(f"⛔ refused: local SKILL.md of {skill} missing or not valid UTF-8; nothing written")
+        return 2
+    if not yes and not prompt_confirm(f"{skill} 의 기준 판을 {h[:19]}… 로 기록할까요?"):
+        print("⏹ 취소됨.")
+        return 0
+    save_skill_keys({skill: {
+        "baseline": {
+            "sha256": h, "ref": ref,
+            "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "note": note or ("set-baseline" if ref else f"set-baseline; ref unresolved: {unresolved}"),
+            "local_sha256": local_norm,
+        },
+        "pending_baseline": DELETE,
+    }})
+    print(f"✅ {skill}: baseline recorded")
+    return 0
 
 
 def build_summary(results: list) -> dict:
@@ -248,7 +406,7 @@ def build_summary(results: list) -> dict:
         status = r.get("status", "")
         if "up-to-date" in status:
             summary["up_to_date"] += 1
-        elif "update-available" in status:
+        elif "update-available" in status or status == "baseline-unconfirmed":
             summary["update_available"] += 1
         elif status == "local-custom":
             summary["local_custom"] += 1
@@ -272,7 +430,8 @@ def determine_exit_code(results: list) -> int:
         return 3
     if 2 in codes:
         return 2
-    if any(r.get("status") in ("update-available", "update-available-with-vulnerability")
+    if any(r.get("status") in ("update-available", "update-available-with-vulnerability",
+                               "baseline-unconfirmed")
            for r in results):
         return 1
     return 0
@@ -293,6 +452,19 @@ def main() -> int:
                         help="apply 후 .bak 파일 보존")
     parser.add_argument("--refresh-sources", action="store_true",
                         help="skill-sources.json 재생성 (미구현 — skill-index.sh 실행 후 수동 편집)")
+    parser.add_argument("--worktree", type=Path, default=None,
+                        help="apply 쓰기 대상 = 운영 저장소의 연결 작업 트리 (운영 트리 쓰기는 거부)")
+    parser.add_argument("--force-overwrite", action="store_true",
+                        help="로컬 수정 소실 검사 (b)(f) 만 푼다")
+    parser.add_argument("--allow-missing-refs", action="store_true",
+                        help="새로 끊어지는 참조 검사 (c) 만 푼다")
+    parser.add_argument("--allow-main", action="store_true",
+                        help="운영 트리 쓰기 거부 (d) 만 푼다 (.bak 보존)")
+    parser.add_argument("--set-baseline", metavar="SKILL", default=None,
+                        help="기준 판 수동 기록 (--hash 없으면 해시만 출력)")
+    parser.add_argument("--hash", dest="want_hash", default=None, help="sha256:<64hex> 정규화 해시")
+    parser.add_argument("--ref", default=None, help="커밋 sha (--set-baseline)")
+    parser.add_argument("--note", default=None, help="기준 판 메모 (--set-baseline)")
     args = parser.parse_args()
 
     if args.refresh_sources:
@@ -300,15 +472,25 @@ def main() -> int:
         print(f"  현재 경로: {SOURCES_PATH}")
         return 0
 
+    if args.set_baseline:
+        ensure_skill_index()
+        return set_baseline(args.set_baseline, load_sources(), args.want_hash, args.ref,
+                            args.note, args.yes)
+
+    if args.worktree is not None:
+        ok, why = validate_worktree(args.worktree, op_root())
+        if not ok:
+            print(f"⛔ {why} — nothing fetched, nothing written")
+            return 2
+
     ensure_skill_index()
     sources = load_sources()
     results = run_check(args.skill, sources)
 
-    apply_results = []
     if args.apply and not args.dry_run:
-        apply_results = run_apply(results, sources, yes=args.yes,
-                                  keep_backup=args.keep_backup)
-        all_results = results + [r for r in apply_results if r.get("applied")]
+        all_results = run_apply(results, sources, yes=args.yes, keep_backup=args.keep_backup,
+                                worktree=args.worktree, force_overwrite=args.force_overwrite,
+                                allow_missing_refs=args.allow_missing_refs, allow_main=args.allow_main)
     else:
         all_results = results
 
@@ -340,14 +522,31 @@ def main() -> int:
                 "local-custom": "🔒",
                 "fetch-error": "❌",
                 "local-missing": "❓",
+                "baseline-unconfirmed": "⚠",
             }.get(r.get("status", ""), "—")
 
             name = r.get("skill", "?")
             status = r.get("status", "?")
+            if r.get("local_state") == "local-modified" and status == "up-to-date":
+                status += " (local-modified)"
             applied = " → 적용됨" if r.get("applied") else ""
+            extra = ""
+            if r.get("baseline_state") == "upstream-changed":
+                c = r.get("changed_lines")
+                extra = (f"\n    기준 판 대비 +{c['added']} -{c['removed']} 줄" if c
+                         else "\n    baseline text unverifiable; line counts unavailable"
+                         if r.get("baseline_content") == "unverifiable" else "")
+            elif r.get("diff_basis") and "update-available" in status:
+                extra = f"\n    {r['diff_basis']}"
+            if r.get("message") and r.get("status") == "baseline-unconfirmed":
+                extra += f"\n    {r['message']}"
+            if r.get("warning"):
+                extra += f"\n    ⚠ {r['warning']}"
             advisory_cmd = f"\n    💡 실행: {r['run_command']}" if r.get("advisory") and r.get("run_command") else ""
             blocked_msg = f"\n    ⛔ {r['reason']}" if r.get("blocked") else ""
-            print(f"  {icon} {name:<35} [{status}]{applied}{advisory_cmd}{blocked_msg}")
+            if r.get("backup") and r.get("applied"):
+                blocked_msg += f"\n    .bak: {r['backup']}"
+            print(f"  {icon} {name:<35} [{status}]{applied}{extra}{advisory_cmd}{blocked_msg}")
 
         if summary["update_available"] > 0 and not args.apply:
             print(f"\n💡 업데이트 적용: /skill-advisor --update --apply")

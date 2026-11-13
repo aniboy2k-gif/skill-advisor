@@ -34,11 +34,13 @@ def check(skill_name: str, entry: dict, local_path: Path) -> dict:
                 outdated_pkgs[item["name"]] = {
                     "current": item.get("version"),
                     "latest": item.get("latest_version"),
+                    "major_bump": _major(item.get("latest_version")) > _major(item.get("version")),
                 }
     except (json.JSONDecodeError, TypeError):
         pass
 
     status = "update-available" if outdated_pkgs else "up-to-date"
+    majors = [f"{n} {v['current']}->{v['latest']}" for n, v in outdated_pkgs.items() if v["major_bump"]]
 
     python_path = meta.get("python_path") or "python3"
     install_context = meta.get("install_context", "system")
@@ -56,7 +58,15 @@ def check(skill_name: str, entry: dict, local_path: Path) -> dict:
         "apply_command": install_cmd,
         "applied": False,
         "error": None,
+        **({"warning": "system-wide python packages: major version rises (" + ", ".join(majors) + ")"}
+           if majors else {}),
     }
+
+
+def _major(version) -> int:
+    """앞자리 정수 (없으면 -1)."""
+    head = str(version or "").split(".", 1)[0]
+    return int(head) if head.isdigit() else -1
 
 
 def apply(skill_name: str, entry: dict, local_path: Path, **kwargs) -> dict:
