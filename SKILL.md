@@ -2,7 +2,7 @@
 name: skill-advisor
 description: "설치된 스킬 진단·추천 도구. 스킬 커버리지·트리거 점검(--scan), 이번 세션에 로드됐어야 할 스킬·Hard Gate 누락 확인(--session-review), 업스트림 업데이트 확인·적용(--update), 스킬 목록 description 예산 진단(--listing-audit)이 필요할 때 사용. 스킬 점검·세션 리뷰·Hard Gate 확인 요청 시."
 hook_no_opt: true   # CSR #2486 P8-H6: utterance-routed skill; OPT-1 must not shorten this description
-argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>] | --update [<skill>] [--apply] [--yes] [--dry-run] [--json] [--keep-backup] [--no-listing-audit] | --listing-audit [--apply] [--json]'
+argument-hint: '[--scan] | --scan --json | --enrich <skill-name> | --session-review [--confirm | --json | --jsonl <path>] | --update [<skill>] [--apply [--worktree <wt>]] [--yes] [--dry-run] [--json] [--keep-backup] [--no-listing-audit(절차 지시)] | --update --set-baseline <skill> [--hash sha256:…] [--ref <commit>] | --listing-audit [--apply] [--json]'
 ---
 
 <!--trigger_conditions
@@ -46,7 +46,9 @@ Options:
   --update --json                    JSON 출력 (CI/자동화용)
   --update --keep-backup             apply 후 .bak 파일 보존
   --update --refresh-sources         skill-sources.json 재생성 안내
-  --update --no-listing-audit        apply 후 자동 listing-audit 실행 억제
+  --update --apply --worktree <wt>   쓰기 대상 = 운영 저장소의 연결 작업 트리 (운영 트리 쓰기는 거부)
+  --update --set-baseline <skill>    기준 판 기록 (--hash 없으면 해시만 출력, 쓰지 않음)
+  --update --no-listing-audit        apply 후 자동 listing-audit 실행 억제 (이 절차에 대한 지시 — update.py 옵션 아님)
   --listing-audit                    skillListing 예산 진단 (shortened 예측 + hook 최적화 후보)
   --listing-audit --apply            hook 스킬 description "(hook)"으로 원자적 수정
   --listing-audit --json             JSON 형식으로 진단 결과 출력
@@ -747,9 +749,14 @@ python3 ~/.claude/skills/skill-advisor/scripts/session-review.py
 
 | 채널 (`upstream_type`) | check (기본) | apply |
 |----------------------|-------------|-------|
-| `github_raw` / `anthropic_official` / `microsoft` / `community` | SHA256 비교 + diff 요약 | backup→apply→verify→atomic rename |
+| `github_raw` / `anthropic_official` / `microsoft` / `community` | 정규화 해시 비교 + 기준 판 비교 | 거부 규칙 통과 시 backup→apply→atomic rename + 기준 판 갱신 |
 | `npm` | npm outdated + npm audit | v1.0: 명령어 출력만 (직접 설치 안 함) |
-| `pip` | pip list --outdated | v1.0: 명령어 출력만 (직접 설치 안 함) |
+| `pip` | pip list --outdated + 메이저 버전 상승 경고(`major_bump`) | v1.0: 명령어 출력만 (직접 설치 안 함) |
+
+**기준 판(baseline)·거부 규칙** — 「상류가 바뀜」과 「로컬에서 고침」을 `skill-sources.json` 의 스킬별 `baseline` 으로 가른다. 판정표·거부 규칙 8개·`--worktree`·`--set-baseline`·패치 세트 스킬 처리·한계 = [`references/update-baseline.md`](references/update-baseline.md) — `--update` 결과를 해석하거나 `--apply`·`--set-baseline` 을 쓰기 전에 연다.
+
+- 일상 적용 경로 = 운영 저장소의 연결 작업 트리에서 `update.py <skill> --apply --worktree <wt>` → 커밋 + PR → 병합 → 운영 트리 `git pull --ff-only`. 운영 트리·서브모듈·패치 세트 스킬에는 쓰지 않는다.
+- `--apply` 를 스킬 이름 없이, 또는 skill-sources.json 에 없는 이름으로 부르면 전 스킬이 대상이 된다 — 정확한 이름을 쓴다.
 | `local_custom` | 체크 없음 (항상 local-custom) | 해당 없음 |
 
 ### 실행 단계
@@ -784,15 +791,15 @@ if [ "$APPLIED_COUNT" -ge 1 ] && [ "$NO_LISTING_AUDIT_FLAG" = "false" ]; then
 fi
 ```
 
-**억제**: `--no-listing-audit` 플래그 명시 시 자동 실행 건너뜀.
+**억제**: `--no-listing-audit` 명시 시 자동 실행 건너뜀 — 이 절차(SKILL.md)에 대한 지시이며 `update.py` 옵션이 아니다(`update.py` 에 넘기면 인자 오류).
 
 ### exit code contract
 
 | 코드 | 의미 |
 |------|------|
 | 0 | 성공 (최신 상태) |
-| 1 | 업데이트 가능 항목 있음 |
-| 2 | 실행 실패 (fetch 오류 등) |
+| 1 | 업데이트 가능 항목 또는 `baseline-unconfirmed` 있음 |
+| 2 | 실행 실패 (fetch 오류 등) · apply 거부 · `--worktree` 전제 불충족 · `--set-baseline` 거부 |
 | 3 | apply 실패, rollback 완료 |
 | 4 | apply 실패 + rollback 실패 (데이터 손실 위험 — .bak 경로 출력) |
 
@@ -813,6 +820,7 @@ fi
 ### Known Limitations (v1.0)
 
 - npm/pip --apply: 명령어 출력만 (직접 실행 없음) → v2.0에서 지원 예정
+- trigger_conditions 블록만 건드린 상류 변경은 보이지 않는다 — 기준 판 비교의 한계 전부 = [`references/update-baseline.md`](references/update-baseline.md) §8
 - trigger_conditions SKILL.md 분리: skill-index.sh 리팩터링 후 v2.0에서 지원
 - 동시 실행 락: v2.0 예정 (현재 atomic write로 최소 보호)
 
