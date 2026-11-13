@@ -108,6 +108,8 @@ def save_skill_keys(updates: dict) -> None:
                         ent[k] = v
             tmp = SOURCES_PATH.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            if SOURCES_PATH.exists():  # 원래 권한 유지 (새 파일은 umask 권한으로 생긴다)
+                tmp.chmod(SOURCES_PATH.stat().st_mode & 0o777)
             tmp.replace(SOURCES_PATH)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)

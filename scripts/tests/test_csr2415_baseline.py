@@ -421,9 +421,11 @@ def test_v3_save_preserves_other_skill_written_concurrently(env):
     data = json.loads(env.sources.read_text())
     data["skills"]["bar"] = {"upstream_type": "local_custom"}
     env.sources.write_text(json.dumps(data))
+    env.sources.chmod(0o600)
     update.save_skill_keys({"foo": {"status": "up-to-date"}})
     after = json.loads(env.sources.read_text())["skills"]
     assert "bar" in after and after["foo"]["status"] == "up-to-date"
+    assert env.sources.stat().st_mode & 0o777 == 0o600
 
 
 def test_v3b_concurrent_writers_both_survive(env, tmp_path):
